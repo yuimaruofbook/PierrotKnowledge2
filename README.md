@@ -1,15 +1,15 @@
 # PierrotKnowledge2
-最高に軽量な、OKF v0.2 とLLMwiki準拠のローカル知識ベース。
+A highly lightweight local knowledge base compliant with OKF v0.2 and LLMwiki.
 
-1に比べてセキュリティよりも機能性を重視した設計で、コンセプトは「空気のように軽く、どこからでもデータ保存」です。
+Designed to prioritize functionality over security—unlike its predecessor—its core concept is "as light as air, allowing data storage from anywhere."
 
-複数機能の集合体をPierrotKnowledge2とし、RAG機能のOKFwiki、プラグイン管理、圧縮管理の3つで構成。
+This suite of features is branded as "PierrotKnowledge2" and comprises three main components: OKFwiki (for RAG functionality), plugin management, and compression management.
 
-導入はリリースノートからダウンロードをお願いします。
+To get started, please download the software from the release notes.
 
 # OKF Wiki
 
-**ローカルの Markdown を正本にした知識ベース。人間と AI エージェントが、同じファイルを同じ経路で読み書きします。**
+**A knowledge base where local Markdown files serve as the source of truth. Humans and AI agents read from and write to the same files via the same paths.**
 
 ---
 
