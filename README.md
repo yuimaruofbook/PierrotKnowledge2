@@ -5,77 +5,122 @@
 
 # OKF Wiki
 
-**最高に軽量な、OKF v0.2 準拠のローカル知識ベース。**
+**ローカルの Markdown を正本にした知識ベース。人間と AI エージェントが、同じファイルを同じ経路で読み書きします。**
 
-📖 **[ドキュメント一覧 / Documentation](docs/README.md)** —
-[使い方](docs/ja/usage.md) ·
+📖 [使い方](docs/ja/usage.md) ·
 [OKF 解説](docs/ja/okf.md) ·
 [LLM Wiki パターン](docs/ja/llm-wiki.md) ·
-[活用方法](docs/ja/workflows.md)
-（[English](docs/en/usage.md)）
-
-Electrobun + Vite + TypeScript で構築。Electron の重さを捨て、Markdown ファイルを
-正本にした File-over-App 設計です。
-
-人間のエディタ操作と AI エージェントの MCP 操作は、同じファイル・同じ書き込み経路を
-通ります。
+[活用方法](docs/ja/workflows.md) ·
+[SkillSpace](docs/ja/skillspace.md) ·
+[ベンチマーク](docs/BENCHMARK.md) ·
+[ドキュメント一覧](docs/README.md)
+（[English docs](docs/en/usage.md)）
 
 ---
 
-## 設計原則
+## これは何か
 
-| 原則 | 内容 |
+Obsidian のようなノートアプリですが、**AI エージェントとの共同作業を前提に設計**されています。
+
+```
+   あなた ──┐                     ┌── Claude Code
+             ├──→  同じ .md  ←──┤    Codex / opencode
+   エディタ ─┘      ファイル       └── Ollama / llama.cpp
+```
+
+UI から書いても MCP から書いても、通るのは同じ `Workspace` です。層の検査・ログ・
+索引更新は 1 箇所にしかありません。だから両者の結果が食い違いません。
+
+| 原則 | 意味 |
 |------|------|
-| **File over App** | ノートの正本は常にローカル Markdown。アプリはビューア・編集・検索・RAG のフロントエンドに過ぎない |
-| **OKF v0.2 準拠** | 階層 Markdown + YAML frontmatter（`type` 必須）、`index.md` / `log.md` 予約、標準リンク |
-| **LLM Wiki パターン** | `raw/`（不変）→ `wiki/`（正本）→ `AGENTS.md`（スキーマ）。`.rag/` は本アプリ独自の派生インデックス |
-| **人間と AI の対称性** | UI も MCP も同一の `Workspace` を経由する。層チェック・ログ・索引更新は一箇所だけ |
-| **最高軽量** | システム WebView + Bun。メインプロセス 322 KB / UI 80 KB（[サイズ](#サイズ)参照） |
+| **File over App** | 正本は常にローカルの Markdown。アプリを消してもノートは残る |
+| **OKF v0.2 準拠** | YAML frontmatter（`type` 必須）+ 標準リンク。他ツールでも読める |
+| **LLM Wiki パターン** | `raw/`（不変の原本）→ `wiki/`（正典）→ `AGENTS.md`（規約） |
+| **人間と AI の対称性** | UI も MCP も同一の書き込み経路。特権も抜け道もない |
+
+技術構成: Electrobun + Bun + TypeScript / SQLite FTS5 / MCP (stdio)。
 
 ---
 
-## アーキテクチャ
+## 5 分で始める
 
-```
-src/
-├── shared/              # 両プロセス共有（I/O なし）
-│   ├── okf/             # frontmatter / concept / links / reserved
-│   ├── types.ts         # データ型のみ
-│   └── rpc-schema.ts    # 型付き RPC 契約
-├── bun/                 # メインプロセス
-│   ├── okf/             # paths(層と封じ込め) / bundle / parser / scaffold
-│   ├── rag/fts.ts       # SQLite FTS5 (BM25)
-│   ├── watch.ts         # 外部変更の監視
-│   ├── workspace.ts     # アプリ中核
-│   ├── rpc.ts           # RPC ハンドラ
-│   └── mcp/             # tools / stdio / standalone
-└── mainview/            # WebView UI (Vanilla TS + Vite)
-    ├── markdown.ts      # サニタイズ付きレンダラ
-    └── ui/              # tree / editor / search
-```
+リポジトリ直下のファイルをダブルクリックするだけです。
 
-詳細は [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+| OS | ファイル |
+|----|---------|
+| Windows | **`SETUP.bat`** |
+| macOS | **`SETUP.command`** |
+| Linux | `./SETUP.command` |
 
-### 知識バンドルの形
+Bun の導入・依存関係・ビルド・バンドル作成・デスクトップアイコン・MCP 設定まで
+自動で行います。**何度実行しても安全**です（既存ファイルは上書きしません）。
 
-```
-my-knowledge/
-├── AGENTS.md          # スキーマ層。エージェントは最初にこれを読む
-├── raw/               # Layer 1 — 不変ソース（書き込み拒否）
-├── wiki/              # Layer 2 — OKF バンドルルート（人間・AI が読み書き）
-│   ├── index.md       # 予約ファイル（ルートのみ okf_version）
-│   ├── log.md         # 予約ファイル（日付グループ・新しい順）
-│   └── **/*.md        # 概念ドキュメント
-└── .rag/              # 派生インデックス（書き込み拒否・再構築可）
-    └── fts.sqlite
+```bat
+SETUP.bat                             通常（デスクトップアプリ）
+SETUP.bat -Connect                    ＋検出したエージェントに自動接続
+SETUP.bat -Headless -Connect          ヘッドレスのみ（AI 専用・軽量）
+SETUP.bat -BundlePath "D:\Knowledge"  バンドルの作成先を指定
+SETUP.bat -NoBuild                    ソースから起動（試用向け・高速）
 ```
 
-**`wiki/` は必須ではありません。** 存在しなければ、開いたフォルダ自体をバンドル
-ルートとみなすので、既存の Markdown フォルダをそのまま開けます。
+> **動作確認**: Windows 11 で実機検証済み。macOS / Linux 用スクリプトは同じ手順を
+> 実装していますが、実機検証は行っていません。
 
-> `AGENTS.md` が LLM Wiki パターンでいう「スキーマ層」です。`.rag/` は正典の
-> パターンには無い、本アプリ独自の検索インデックスです。詳細は
-> [LLM Wiki パターン](docs/ja/llm-wiki.md) を参照。
+---
+
+## 2 つのモード
+
+用途に応じて選べます。**同じバンドルを共有**するので併用もできます。
+
+|  | デスクトップ | **ヘッドレス** |
+|---|---:|---:|
+| 用途 | 自分で読み書きする | **エージェントに任せる** |
+| 常駐メモリ | 607 MB | **129 MB** |
+| プロセス数 | 7 | **1** |
+| 実行ファイル | 117 MB | **94 MB** |
+| 起動 | 710 ms | **372 ms** |
+| ウィンドウ | あり | なし |
+
+メモリの大半はウィンドウと WebView が占めます。エージェントに作業させている間は
+ウィンドウが不要なので、**ヘッドレスにすると 4.7 倍軽くなります。**
+
+```bat
+SETUP.bat -Headless -Connect   ヘッドレスを構築してエージェントに接続
+bun run build:headless         単一実行ファイルを生成（Bun のインストール不要）
+bun run headless               ソースから直接起動
+```
+
+`SETUP.bat -Connect` は、ヘッドレスがビルド済みならそちらを指す設定を書きます。
+
+---
+
+## 実測値
+
+同一の 300 ノートを開いた状態での比較です。プロセスツリー全体を 3 回測った中央値。
+手順・生データ・分析は [BENCHMARK.md](docs/BENCHMARK.md)。
+
+| 指標 | ヘッドレス | デスクトップ | Obsidian 1.13.4 |
+|------|----------:|------------:|----------------:|
+| 常駐メモリ | **129 MB** | 607 MB | 424 MB |
+| プロセス数 | **1** | 7 | 4 |
+| ディスク | **94 MB** | 117 MB | 373 MB |
+| 起動 | **0.37 s** | 0.71 s | 0.48 s |
+
+エージェントが実際に働いているとき（1,921 ツール呼び出し／190 呼び出し毎秒）でも、
+ヘッドレスのピークは **160 MB** で、アイドルで 129 MB に戻ります。
+
+### 正直に書いておくこと
+
+**デスクトップ版は Obsidian よりメモリを食います**（1.4 倍）。当初「システム WebView を
+使えば Electron より軽い」と考えていましたが、実測ではこれは**ディスクについてのみ
+正しく、メモリでは誤り**でした。
+
+内訳を切り分けたところ、**メモリの 90% は当プロジェクトのコードではありません**
+（WebView2 が 57%、Electrobun が 26%、Bun の下限が 7%、自コードは 10%）。
+経緯と削減案は [軽量化の提案](docs/ja/lightweight-proposal.md) にまとめています。
+
+Obsidian は機能が圧倒的に多い（グラフビュー、Canvas、数千のプラグイン、同期、
+モバイル）ため、**これは同じ土俵の比較ではありません。**
 
 ---
 
@@ -83,31 +128,42 @@ my-knowledge/
 
 ### ノートアプリとして
 
-- [x] 任意フォルダを OKF バンドルとして開く（`wiki/` の有無を自動判定）
-- [x] Markdown 編集・プレビュー（ソース / 分割 / プレビューの3モード）
-- [x] **自動保存**（入力停止 0.9 秒後）
-- [x] **クイックスイッチャー** `Ctrl+P` / **コマンドパレット** `Ctrl+Shift+P`（あいまい検索）
-- [x] **`[[` でウィキリンク補完**、未作成なら「新規作成」を提示
-- [x] エディタ操作: Tab インデント、リスト自動継続、`Ctrl+B` / `Ctrl+I`
-- [x] **ファイル操作**: 作成・フォルダ作成・リネーム・移動（D&D）・削除
-- [x] **リネーム時に被リンクを自動書き換え**（コードブロック内は対象外）
-- [x] バックリンク表示、タグでの絞り込み
-- [x] 未解決リンクの一覧（＝知識の欠落。選ぶとページ作成）
-- [x] 外部変更の自動反映（エージェントの書き込みが即座に UI に反映）
-- [x] ネイティブフォルダ選択ダイアログ
-- [x] **セッション復元** — 前回のバンドルと開いていたファイルを自動で再オープン
+- **単一の執筆面** — 分割表示ではなく 1 カラム。`編集 / プレビュー` を切替
+- **書式ツールバー** — 見出し・太字・斜体・取り消し線・コード・リンク・引用・
+  リスト 3 種・文字揃え・区切り線・表。すべてトグル式
+- **表示幅スライダー** — 本文カラムを 40〜100% で調整（設定は保存）
+- **書式を保った貼り付け** — Notion / Google ドキュメントからのコピーを Markdown に変換
+- **`[[` 補完** — 未作成なら「新規作成」を提示
+- **リネーム時にリンクを自動追従** — 被リンクを全て書き換え（コード内は除外）
+- **バックリンク**、**未解決リンク一覧**（＝まだ書いていない知識の可視化）
+- 自動保存（0.9 秒）、外部変更の即時反映、セッション復元
+- クイックスイッチャー `Ctrl+P` / コマンドパレット `Ctrl+Shift+P`
 
-### RAG として
+### 検索・RAG
 
-- [x] **日本語検索**（CJK バイグラム索引。`軽量` のような 2 文字語も文中でヒット）
-- [x] **見出し単位のチャンク分割** — 検索結果もRAGも「どのセクションか」まで特定
-- [x] `retrieve` ツール: 引用アンカー付き・文字数予算付きのコンテキスト組み立て
-- [x] BM25 ランキング（タイトル 12倍 / 見出し 4倍 / 本文 1倍）
-- [x] `type` / `tags` / `path_prefix` による絞り込み
-- [x] mtime 差分による増分インデックス
-- [x] 標準 MCP サーバー（検索・取得・読取・書込・移動・準拠チェック）
-- [x] `AGENTS.md` を最初に読ませる設計
-- [x] OKF 準拠チェックと非準拠の可視化
+- **日本語検索** — CJK を重なり合うバイグラムに展開して索引するため、
+  `軽量` のような 2 文字語が文中でもヒットします
+  （素の SQLite FTS5 では 1 件も返りません → [詳細](docs/ja/llm-wiki.md)）
+- **`retrieve`** — 見出し単位のパッセージを引用アンカー付き・文字数予算内で返す
+- **`search`** — ページを特定する BM25 検索（タイトル 12倍 / 見出し 4倍 / 本文 1倍）
+- SQLite FTS5、外部依存ゼロ、完全ローカル
+
+### エージェント連携
+
+- **MCP サーバー** — 29 ツール
+- **MCP クライアント** — Notion・GitHub・Google Drive から `raw/` に取り込み
+- **SkillSpace** — 手順書を段階開示。常時読むのは名前と説明だけで、選ばれた 1 件の
+  本文だけを展開（同梱 3 スキルで実測 **58% のトークン削減**）→ [解説](docs/ja/skillspace.md)
+- **ループ** — 作業の型を **1 設計 1 ファイル**で管理。開始時と終了時の状態を
+  突き合わせ、**OKF 非準拠が増えたらエラー**にします
+- **ワンタッチ接続** — Claude Code / Codex / opencode / Hermes Agent
+- **内蔵エージェント** — Ollama / llama.cpp は MCP を話さないため、本アプリが
+  ツール呼び出しループを実行します
+
+### UI
+
+スイス・デザイン（International Typographic Style）— 厳密なグリッド、角丸なし、
+細罫、Helvetica 系。緑を基調とした配色。ライト / ダーク自動切替。
 
 ### キーボード
 
@@ -115,257 +171,113 @@ my-knowledge/
 |------|------|
 | `Ctrl/Cmd+P` | ノートをあいまい検索して開く |
 | `Ctrl/Cmd+Shift+P` | コマンドパレット |
-| `Ctrl/Cmd+K` / `+F` | 全文検索 |
+| `Ctrl/Cmd+K` | 全文検索 |
 | `Ctrl/Cmd+S` | 保存（自動保存もあり） |
-| `Ctrl/Cmd+O` | フォルダを開く |
 | `Ctrl/Cmd+B` / `+I` | 太字 / 斜体 |
+| `Ctrl/Cmd+Shift+V` | 書式なしで貼り付け |
 | `Tab` / `Shift+Tab` | インデント / アンインデント |
 
 ---
 
-## セットアップ（ワンタッチ）
+## バンドルの構成
 
-リポジトリ直下の **`SETUP` をダブルクリックするだけ**です。
-
-| OS | ファイル |
-|----|---------|
-| **Windows** | **`SETUP.bat`** をダブルクリック |
-| **macOS** | **`SETUP.command`** をダブルクリック |
-| **Linux** | `./SETUP.command` を実行 |
-
-コマンドラインからでも同じです:
-
-```bash
-bun run setup        # Windows
-bun run setup:unix   # macOS / Linux
+```
+your-bundle/
+├── AGENTS.md          エージェントが最初に読む規約
+├── skills/            SkillSpace: 手順書（段階開示）
+├── loops/             ループ設計と実行履歴（1 設計 1 ファイル）
+├── raw/               Layer 1: 不変の原本。書き込み禁止
+├── wiki/              Layer 2: 正典
+│   ├── index.md         予約ファイル
+│   ├── log.md           予約ファイル
+│   └── **/*.md          概念ドキュメント（frontmatter に type 必須）
+└── .rag/              Layer 3: 派生インデックス（削除しても再構築可能）
 ```
 
-これだけで以下が実行されます:
-
-1. **Bun の確認とインストール**（未導入なら bun.sh から自動取得）
-2. 依存関係のインストール
-3. **アプリアイコンの生成**（外部ツール不要。PNG / ICO / iconset を自前生成）
-4. 本番ビルド
-5. **知識バンドルの初期化**（既定: `~/Documents/OKF Wiki`）
-6. **デスクトップアイコンの作成**（Windows: `.lnk` / macOS: `.app` / Linux: `.desktop`）
-7. `mcp-config.json` の書き出し（エージェント接続用）
-
-**再実行しても安全です。** 各手順は実行前に状態を確認し、既存ファイルは上書きしません。
-
-#### オプション
-
-| オプション | 効果 |
-|-----------|------|
-| `-BundlePath <path>` / `--bundle <path>` | バンドルの作成先を指定 |
-| `-NoBuild` / `--no-build` | ビルドを省略し、ソースから起動する（高速。試用向け） |
-| `-NoShortcut` / `--no-shortcut` | デスクトップアイコンを作らない |
-
-#### うまく起動しないとき
-
-| 症状 | 原因と対処 |
-|------|-----------|
-| アイコンをクリックすると**一瞬だけ反応して消える** | 古いセットアップが作ったショートカットが `bin\bun.exe`（Bun ランタイム本体）を指しています。引数なしで起動すると使い方を表示して即終了するため、ウィンドウが一瞬光って消えます。**`SETUP.bat` を再実行**すれば、正しい `bin\launcher.exe` を指すショートカットに置き換わります |
-| ビルドが `EACCES: permission denied` で失敗する | アプリが起動中だとビルドフォルダを削除できません。現在は setup が自動で終了させます。手動なら アプリを閉じてから再実行してください |
-| ショートカットのターゲットを確認したい | プロパティの「リンク先」が `...\bin\launcher.exe` になっていれば正しい状態です |
-
-### 手動セットアップ
-
-前提: [Bun](https://bun.sh) 1.1+ / macOS 14+ / Windows 11+ / Ubuntu 22.04+
-
-```bash
-bun install
-bun run icon                    # アイコン生成
-bun run init-bundle ~/my-notes  # バンドル作成（任意）
-bun run dev                     # 起動
-bun run dev:hmr                 # Vite dev server と併走
-bun run size                    # バンドルサイズの計測
-```
+層の規約は `paths.ts` の 1 箇所で強制されます。`raw/` と `.rag/` への書き込みは、
+UI からでも MCP からでも同じ理由で拒否されます。
 
 ---
 
-## サイズ
+## エージェントを接続する
 
-「最高軽量」は計測して守る方針です。`bun run size` でいつでも確認できます。
+`SETUP.bat -Connect` が自動で書き込みます。**必ずバックアップを取り**、既存の設定は
+1 項目の追加・置換以外変更しません。手動なら:
 
-| 対象 | サイズ |
-|------|--------|
-| Bun メインプロセス | **322 KB** |
-| MCP サーバー（単体） | **170 KB** |
-| WebView バンドル | **80 KB** |
-| アイコン一式 | 80 KB |
-| **パッケージ済みアプリ（Windows 実測）** | **約 117 MB** |
+| ツール | 設定ファイル |
+|--------|-------------|
+| Claude Code | `<バンドル>/.mcp.json` |
+| Codex | `~/.codex/config.toml` |
+| opencode | `~/.config/opencode/opencode.json` |
+| Hermes Agent | `~/.hermes/config.yaml` |
 
-> パッケージの内訳のうち **約 111 MB は `bin/bun.exe`**（Electrobun が同梱する
-> Bun ランタイム本体）です。自前コードは 322 KB に過ぎず、ここは削減の余地が
-> ありません。Electron のように Chromium を同梱しない代わりに、JS ランタイムは
-> 同梱される、というのが Electrobun の実際のトレードオフです。
-> （以前このドキュメントに書いていた「~12–14MB」は上流の宣伝値で、
-> 本ビルドの実測とは一致しません。訂正しました。）
+```json
+{
+  "mcpServers": {
+    "okf-wiki": {
+      "command": "/絶対パス/build/headless/okf-mcp.exe",
+      "env": { "OKF_BUNDLE": "/絶対パス/your-bundle" }
+    }
+  }
+}
+```
 
-### 削減した内容
+エージェントは `read_agents_md` → `loop_start` → `skill_find` の順に呼ぶよう
+`AGENTS.md` で指示されています。
 
-| 項目 | 前 | 後 | 手段 |
-|------|----|----|------|
-| Bun メインプロセス | 6.90 MB | **322 KB** | Electrobun から three.js / Babylon.js を除去（下記） |
-| WebView 出力 | 332 KB | **80 KB** | 本番ビルドで sourcemap を無効化 |
+---
 
-#### three.js / Babylon.js の除去（-5.4 MB）
+## アーキテクチャ
 
-Electrobun の `dist/api/bun/index.ts` は 3D ライブラリ2つを**再エクスポートする
-ためだけに** eager import しており、内部では一切使っていません。トップレベルの
-静的 import なので tree-shaking では落ちず、`external` 指定は実行時に解決不能に
-なるため使えません。
+```
+src/
+├── shared/          両プロセス共有・I/O なし・DOM なし
+│   ├── okf/           frontmatter / concept / links / skill / loop
+│   ├── markdown-format.ts   書式コマンド（純関数）
+│   └── rpc-schema.ts        型付き RPC 契約
+├── bun/             メインプロセス（唯一の書き込み経路）
+│   ├── okf/           bundle / paths / skills / loops
+│   ├── rag/           FTS5 索引・取得
+│   ├── mcp/           サーバー（29 ツール）+ クライアント
+│   ├── agent/         ローカル LLM 用ツールループ
+│   └── connect/       他ランタイムへの設定書き込み
+└── mainview/        WebView（ファイルシステム権限を持たない）
+```
 
-そこで `bun patch` で該当 import と再エクスポートを削除しています
-（[`patches/electrobun@1.18.1.patch`](patches/)）。`bun install` で自動適用され、
-再現性があります。`Electrobun.three` / `Electrobun.babylon` は使えなくなりますが、
-本アプリは 3D 機能を使いません。必要なら `three` を直接 import してください。
-
-その他: 本番ビルドで sourcemap 無効、`useAsar` でリソースを単一アーカイブ化、
-ICU ロケールを `en` / `ja` に限定（CEF を同梱する場合のみ効果あり）。
+詳細は [アーキテクチャ](docs/ARCHITECTURE.md)、
+OKF 準拠状況は [CONFORMANCE.md](docs/CONFORMANCE.md)。
 
 ---
 
 ## 開発
 
 ```bash
-bun run check         # typecheck (bun側 + view側) + テスト
-bun test              # テストのみ
-bun run size          # サイズ計測
-bun run build:prod    # 本番ビルド
+bun install
+bun run dev              # 起動（ソースから）
+bun run check            # typecheck + テスト
+bun test                 # 486 テスト / 22 ファイル
+bun run build            # デスクトップ版のパッケージング
+bun run build:headless   # ヘッドレス実行ファイル（94 MB・単一ファイル）
+bun run size             # サイズレポート
+bun run bench:workload <bundle> 100   # 実運用ワークロードで計測
 ```
 
----
-
-## MCP を外部エージェントから使う
-
-Claude Code 等の設定例:
-
-```json
-{
-  "mcpServers": {
-    "okf-wiki": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/okf-wiki/src/bun/mcp/standalone.ts"],
-      "env": {
-        "OKF_BUNDLE": "/absolute/path/to/your-bundle"
-      }
-    }
-  }
-}
-```
-
-`OKF_BUNDLE` を省略した場合は `open_bundle` ツールを先に呼びます。
-
-#### 提供ツール
-
-| ツール | 用途 |
-|--------|------|
-| `read_agents_md` | **最初に呼ぶ。** バンドルの契約を読む |
-| `retrieve` | **質問に答える。** 見出し単位の本文＋引用アンカー＋文字数予算 |
-| `search` | **ページを探す。** 1 ドキュメント 1 件、該当セクション名付き |
-| `read_file` | 本文 + frontmatter + リンク + バックリンク |
-| `create_concept` | 準拠 frontmatter を自動生成して新規作成 |
-| `write_file` | 既存更新。非準拠は警告として返る |
-| `move_file` | リネーム・移動。**被リンクを自動書き換え** |
-| `delete_file` | 削除。リンク切れになる参照元を報告 |
-| `create_directory` | フォルダ作成 |
-| `backlinks` / `unresolved_links` | 被リンク一覧 / 未作成ページの候補 |
-| `list_concepts` / `list_tags` | 全 ID 一覧 / タグ・型の集計 |
-| `check_conformance` | OKF §11 違反の一括検出 |
-| `bundle_info` / `list_files` | 概況・層ラベル付き一覧 |
-| `rebuild_index` / `rebuild_rag` | `index.md` / 検索索引の再構築 |
-
-`raw/` と `.rag/` への書き込みは、UI からも MCP からも拒否されます。
-バンドル外へのパス（`../` 等）も同様に拒否されます。
-
-#### `retrieve` の出力例
-
-```
-Retrieved 1 passage(s) for: 日本語の検索はどう実装している？
-
-### 検索の仕組み › 日本語対応
-source: `wiki/search.md` · anchor: `search.md#日本語対応` · type: Playbook
-
-unicode61 は日本語を分かち書きできないため、CJK を二文字ずつの
-バイグラムに展開して索引する。
-```
-
-アンカーは実在のファイル位置なので、人間が開いて検証・修正できます。
+| 対象 | サイズ |
+|------|-------:|
+| Bun メインプロセス | 419 KB |
+| MCP サーバー（単体） | 233 KB |
+| WebView バンドル（HTML+CSS+JS） | 148 KB |
 
 ---
 
-## OKF v0.2 準拠
+## 既知の限界
 
-**バンドルルートは `wiki/` です。** 概念 ID はそこからの相対パスから `.md` を
-除いたもの（`wiki/topics/foo.md` → `topics/foo`）。`raw/` と `.rag/` は
-バンドルの外側にある兄弟ディレクトリで、OKF の規定対象ではありません。
-
-- §4 概念ファイルはすべて YAML frontmatter + 非空の `type`（唯一の必須項目）
-- §8 `index.md` は見出し＋箇条書き `* [Title](/path.md) - description`。
-  ルートのみ `okf_version: 0.2` を持つ
-- §9 `log.md` は `## YYYY-MM-DD` 日付グループ、**新しい順**、散文の箇条書き
-- §6 リンクは絶対形式 `/topics/foo.md`（推奨）と相対形式の両方。
-  `[[wikilink]]` も同じ ID 空間に解決。**リンク切れは許容**（未執筆の知識）
-- §5 `sources` / `generated` / `verified` / `status` / `stale_after`。
-  bare `verified` は1要素リストとして扱う。`stale_after` は `today >=` で判定
-- §11 未知の `type`・追加キー・リンク切れ・`index.md` 欠落を理由に**拒否しない**
-
-**仕様原文と照合した準拠状況の一覧は [docs/CONFORMANCE.md](docs/CONFORMANCE.md)。**
-監査で見つかった 5 件の非準拠（index/log の形式、リンク解決順、`okf_version` の
-誤判定、`stale_after` の比較）とその修正内容も記載しています。
-
-未実装: §10 Attested computations、§5.1 の脚注による claim 単位帰属。
-
-仕様: [OKF SPEC](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md)
-
----
-
-## 技術スタック
-
-| 層 | 選択 | 理由 |
-|----|------|------|
-| Desktop | Electrobun | システム WebView（Chromium 非同梱）、TS ネイティブ |
-| Runtime | Bun | 高速 FS / 組み込み SQLite / 単一 TS 実行 |
-| UI ビルド | Vite | HTML/CSS 込みの最小バンドル、dev server |
-| UI | Vanilla TS | フレームワーク肥大を避ける（~57 kB） |
-| Search | SQLite FTS5 | 依存ゼロ、BM25、ローカルのみ |
-| Agent | MCP (stdio) | 標準プロトコル、Claude Code 等と直結 |
-| Format | OKF v0.2 | 人間・エージェント双方が同じファイルを読める |
-
----
-
-## 日本語検索について
-
-SQLite の `unicode61` トークナイザは日本語を分かち書きできません。素の構成では
-文中の「軽量」は**一件もヒットしません**（トークンが文全体になるため）。
-`trigram` トークナイザは 3 文字以上しか扱えず、「知識」「軽量」「設計」のような
-2 文字語が検索できません。
-
-そこで本アプリは、索引時とクエリ時の両方で **CJK を重なり合うバイグラムに展開**
-します。`unicode61` は空白区切りのバイグラムを字種をまたいでも 1 トークンとして
-保持する（`識ベ`、`トア`）ため、両端が正確に一致します。
-
-| 入力 | 挙動 |
-|------|------|
-| `軽量` | 文中でもヒット |
-| `軽` | 前方一致（`軽*`）にフォールバック |
-| `知識ベース` | 隣接必須のフレーズ検索 |
-| 自然文の質問 | `retrieve` では緩いOR + BM25。助詞のみのバイグラムは無視 |
-
-スニペットは SQLite の `snippet()` ではなくアプリ側で生成します
-（索引側の文字列はバイグラム列なので、そのまま出すと読めないため）。
-
----
-
----
-
-## ロードマップ
-
-- MCP Streamable HTTP トランスポート
-- グラフビュー（軽量 SVG）
-- OKF trust tier のバッジ表示（`deriveTrustTier` は実装済み）
-- 差分パッチ更新（Electrobun 標準）
+- **デスクトップ版のメモリは Obsidian に劣ります**（607 対 424 MB）。
+  WebView2 の 6 プロセスと Bun の常駐が支配的で、アプリコードの最適化では
+  埋まりません。エージェント用途では**ヘッドレス（129 MB）**を使ってください
+- **大規模での挙動は未測定** — 300 ノートまでしか計測していません
+- **macOS / Linux は未検証** — スクリプトは実装済みですが実機確認していません
+- グラフビュー、Canvas、プラグイン機構、モバイル、同期はありません
 
 ---
 
