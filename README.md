@@ -4,8 +4,7 @@ Designed around the philosophy of being "as light as air," this version sheds re
 
 "Let them laugh. The fool sees what the crowd ignores."
 
-"PierrotKnowledge was forged under a single conviction: Let them laugh.
-Real breakthroughs often look absurd to the status quo. We built this willing to play the fool, so we could build something that truly matters."
+"Play the fool" / "Jester"
 
 This suite of features is branded as "PierrotKnowledge2" and comprises three main components: OKFwiki (for RAG functionality), plugin management, and compression management.
 
