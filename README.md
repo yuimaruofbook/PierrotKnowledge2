@@ -9,270 +9,283 @@ To get started, please download the software from the release notes.
 
 # OKF Wiki
 
-**A knowledge base where local Markdown files serve as the source of truth. Humans and AI agents read from and write to the same files via the same paths.**
+A local knowledge base that a person and an AI agent can both work in, using
+the same plain Markdown files as the source of truth.
+
+No database to sync, no proprietary format, no account. A bundle is a folder of
+`.md` files you can read in any editor, keep in Git, and open again in ten
+years.
+
+日本語のドキュメントは [docs/ja/usage.md](docs/ja/usage.md)。
 
 ---
 
-## これは何か
+## What it is
 
-Obsidian のようなノートアプリですが、**AI エージェントとの共同作業を前提に設計**されています。
+Three front ends share one folder and one set of files:
 
-```
-   あなた ──┐                     ┌── Claude Code
-             ├──→  同じ .md  ←──┤    Codex / opencode
-   エディタ ─┘      ファイル       └── Ollama / llama.cpp
-```
+- **A desktop app** — Markdown editor with reading view, wikilinks, backlinks,
+  full-text search and a file tree.
+- **An MCP server** — 37 tools, so Claude Code, Codex, opencode or any other
+  MCP host reads and writes the same wiki you do.
+- **A CLI** (`okf`) — generated from the MCP tool table, so anything an agent
+  can do over MCP it can also do from a terminal.
 
-UI から書いても MCP から書いても、通るのは同じ `Workspace` です。層の検査・ログ・
-索引更新は 1 箇所にしかありません。だから両者の結果が食い違いません。
-
-| 原則 | 意味 |
-|------|------|
-| **File over App** | 正本は常にローカルの Markdown。アプリを消してもノートは残る |
-| **OKF v0.2 準拠** | YAML frontmatter（`type` 必須）+ 標準リンク。他ツールでも読める |
-| **LLM Wiki パターン** | `raw/`（不変の原本）→ `wiki/`（正典）→ `AGENTS.md`（規約） |
-| **人間と AI の対称性** | UI も MCP も同一の書き込み経路。特権も抜け道もない |
-
-技術構成: Electrobun + Bun + TypeScript / SQLite FTS5 / MCP (stdio)。
+All three drive the same `Workspace`. Layer checks, logging and index updates
+exist in exactly one place, so the three cannot disagree about what a document
+says or who was allowed to write it.
 
 ---
 
-## 5 分で始める
+## Honest numbers first
 
-リポジトリ直下のファイルをダブルクリックするだけです。
+Windows 11, 300 notes (1.3 MB), the identical corpus in both applications.
+Method and raw data: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-| OS | ファイル |
-|----|---------|
-| Windows | **`SETUP.bat`** |
-| macOS | **`SETUP.command`** |
-| Linux | `./SETUP.command` |
+| | OKF headless | OKF desktop | Obsidian |
+|---|---|---|---|
+| Resident memory | **129 MB** | 607 MB | 424 MB |
+| Install size | **94 MB** | 117 MB | 373 MB |
 
-Bun の導入・依存関係・ビルド・バンドル作成・デスクトップアイコン・MCP 設定まで
-自動で行います。**何度実行しても安全**です（既存ファイルは上書きしません）。
+**The desktop app uses more memory than Obsidian.** That contradicts the
+premise this project started from — that a system WebView would beat a bundled
+Chromium — and it stays at the top of the README rather than buried, because
+the measurement is the measurement. The saving is real on disk (117 MB vs
+373 MB) and real in headless mode, which is what an agent actually runs.
 
-```bat
-SETUP.bat                             通常（デスクトップアプリ）
-SETUP.bat -Connect                    ＋検出したエージェントに自動接続
-SETUP.bat -Headless -Connect          ヘッドレスのみ（AI 専用・軽量）
-SETUP.bat -BundlePath "D:\Knowledge"  バンドルの作成先を指定
-SETUP.bat -NoBuild                    ソースから起動（試用向け・高速）
-```
-
-> **動作確認**: Windows 11 で実機検証済み。macOS / Linux 用スクリプトは同じ手順を
-> 実装していますが、実機検証は行っていません。
+Where the memory goes, measured: WebView2 ≈ 57%, Electrobun ≈ 26%, the Bun
+runtime ≈ 7%, this project's own code ≈ 10%. Of the 117 MB on disk, 111.5 MB is
+`bun.exe`; everything written for this project is 0.6 MB. There is very little
+here left to make smaller.
 
 ---
 
-## 2 つのモード
+## Install
 
-用途に応じて選べます。**同じバンドルを共有**するので併用もできます。
-
-|  | デスクトップ | **ヘッドレス** |
-|---|---:|---:|
-| 用途 | 自分で読み書きする | **エージェントに任せる** |
-| 常駐メモリ | 607 MB | **129 MB** |
-| プロセス数 | 7 | **1** |
-| 実行ファイル | 117 MB | **94 MB** |
-| 起動 | 710 ms | **372 ms** |
-| ウィンドウ | あり | なし |
-
-メモリの大半はウィンドウと WebView が占めます。エージェントに作業させている間は
-ウィンドウが不要なので、**ヘッドレスにすると 4.7 倍軽くなります。**
-
-```bat
-SETUP.bat -Headless -Connect   ヘッドレスを構築してエージェントに接続
-bun run build:headless         単一実行ファイルを生成（Bun のインストール不要）
-bun run headless               ソースから直接起動
-```
-
-`SETUP.bat -Connect` は、ヘッドレスがビルド済みならそちらを指す設定を書きます。
-
----
-
-## 実測値
-
-同一の 300 ノートを開いた状態での比較です。プロセスツリー全体を 3 回測った中央値。
-手順・生データ・分析は [BENCHMARK.md](docs/BENCHMARK.md)。
-
-| 指標 | ヘッドレス | デスクトップ | Obsidian 1.13.4 |
-|------|----------:|------------:|----------------:|
-| 常駐メモリ | **129 MB** | 607 MB | 424 MB |
-| プロセス数 | **1** | 7 | 4 |
-| ディスク | **94 MB** | 117 MB | 373 MB |
-| 起動 | **0.37 s** | 0.71 s | 0.48 s |
-
-エージェントが実際に働いているとき（1,921 ツール呼び出し／190 呼び出し毎秒）でも、
-ヘッドレスのピークは **160 MB** で、アイドルで 129 MB に戻ります。
-
-### 正直に書いておくこと
-
-**デスクトップ版は Obsidian よりメモリを食います**（1.4 倍）。当初「システム WebView を
-使えば Electron より軽い」と考えていましたが、実測ではこれは**ディスクについてのみ
-正しく、メモリでは誤り**でした。
-
-内訳を切り分けたところ、**メモリの 90% はこのプロジェクト自体のコードではありません**
-（WebView2 が 57%、Electrobun が 26%、Bun の下限が 7%、自コードは 10%）。
-
----
-
-## 機能
-
-### ノートアプリとして
-
-- **単一の執筆面** — 分割表示ではなく 1 カラム。`編集 / プレビュー` を切替
-- **書式ツールバー** — 見出し・太字・斜体・取り消し線・コード・リンク・引用・
-  リスト 3 種・文字揃え・区切り線・表。すべてトグル式
-- **表示幅スライダー** — 本文カラムを 40〜100% で調整（設定は保存）
-- **書式を保った貼り付け** — Notion / Google ドキュメントからのコピーを Markdown に変換
-- **`[[` 補完** — 未作成なら「新規作成」を提示
-- **リネーム時にリンクを自動追従** — 被リンクを全て書き換え（コード内は除外）
-- **バックリンク**、**未解決リンク一覧**（＝まだ書いていない知識の可視化）
-- 自動保存（0.9 秒）、外部変更の即時反映、セッション復元
-- クイックスイッチャー `Ctrl+P` / コマンドパレット `Ctrl+Shift+P`
-
-### 検索・RAG
-
-- **日本語検索** — CJK を重なり合うバイグラムに展開して索引するため、
-  `軽量` のような 2 文字語が文中でもヒットします
-  （素の SQLite FTS5 では 1 件も返りません → [詳細](docs/ja/llm-wiki.md)）
-- **`retrieve`** — 見出し単位のパッセージを引用アンカー付き・文字数予算内で返す
-- **`search`** — ページを特定する BM25 検索（タイトル 12倍 / 見出し 4倍 / 本文 1倍）
-- SQLite FTS5、外部依存ゼロ、完全ローカル
-
-### エージェント連携
-
-- **MCP サーバー** — 29 ツール
-- **MCP クライアント** — Notion・GitHub・Google Drive から `raw/` に取り込み
-- **SkillSpace** — 手順書を段階開示。常時読むのは名前と説明だけで、選ばれた 1 件の
-  本文だけを展開（同梱 3 スキルで実測 **58% のトークン削減**）→ [解説](docs/ja/skillspace.md)
-- **ループ** — 作業の型を **1 設計 1 ファイル**で管理。開始時と終了時の状態を
-  突き合わせ、**OKF 非準拠が増えたらエラー**にします
-- **ワンタッチ接続** — Claude Code / Codex / opencode / Hermes Agent
-- **内蔵エージェント** — Ollama / llama.cpp は MCP を話さないため、本アプリが
-  ツール呼び出しループを実行します
-
-### UI
-
-スイス・デザイン（International Typographic Style）— 厳密なグリッド、角丸なし、
-細罫、Helvetica 系。緑を基調とした配色。ライト / ダーク自動切替。
-
-### キーボード
-
-| キー | 動作 |
-|------|------|
-| `Ctrl/Cmd+P` | ノートをあいまい検索して開く |
-| `Ctrl/Cmd+Shift+P` | コマンドパレット |
-| `Ctrl/Cmd+K` | 全文検索 |
-| `Ctrl/Cmd+S` | 保存（自動保存もあり） |
-| `Ctrl/Cmd+B` / `+I` | 太字 / 斜体 |
-| `Ctrl/Cmd+Shift+V` | 書式なしで貼り付け |
-| `Tab` / `Shift+Tab` | インデント / アンインデント |
-
----
-
-## バンドルの構成
+Requires [Bun](https://bun.sh). On Windows:
 
 ```
-your-bundle/
-├── AGENTS.md          エージェントが最初に読む規約
-├── skills/            SkillSpace: 手順書（段階開示）
-├── loops/             ループ設計と実行履歴（1 設計 1 ファイル）
-├── raw/               Layer 1: 不変の原本。書き込み禁止
-├── wiki/              Layer 2: 正典
-│   ├── index.md         予約ファイル
-│   ├── log.md           予約ファイル
-│   └── **/*.md          概念ドキュメント（frontmatter に type 必須）
-└── .rag/              Layer 3: 派生インデックス（削除しても再構築可能）
+SETUP.bat
 ```
 
-層の規約は `paths.ts` の 1 箇所で強制されます。`raw/` と `.rag/` への書き込みは、
-UI からでも MCP からでも同じ理由で拒否されます。
+Installs dependencies, builds, creates a desktop shortcut and scaffolds a
+bundle. `SETUP.bat -Connect` additionally writes this app into your agent
+host's configuration.
 
----
-
-## エージェントを接続する
-
-`SETUP.bat -Connect` が自動で書き込みます。**必ずバックアップを取り**、既存の設定は
-1 項目の追加・置換以外変更しません。手動なら:
-
-| ツール | 設定ファイル |
-|--------|-------------|
-| Claude Code | `<バンドル>/.mcp.json` |
-| Codex | `~/.codex/config.toml` |
-| opencode | `~/.config/opencode/opencode.json` |
-| Hermes Agent | `~/.hermes/config.yaml` |
-
-```json
-{
-  "mcpServers": {
-    "okf-wiki": {
-      "command": "/絶対パス/build/headless/okf-mcp.exe",
-      "env": { "OKF_BUNDLE": "/絶対パス/your-bundle" }
-    }
-  }
-}
-```
-
-エージェントは `read_agents_md` → `loop_start` → `skill_find` の順に呼ぶよう
-`AGENTS.md` で指示されています。
-
----
-
-## アーキテクチャ
-
-```
-src/
-├── shared/          両プロセス共有・I/O なし・DOM なし
-│   ├── okf/           frontmatter / concept / links / skill / loop
-│   ├── markdown-format.ts   書式コマンド（純関数）
-│   └── rpc-schema.ts        型付き RPC 契約
-├── bun/             メインプロセス（唯一の書き込み経路）
-│   ├── okf/           bundle / paths / skills / loops
-│   ├── rag/           FTS5 索引・取得
-│   ├── mcp/           サーバー（29 ツール）+ クライアント
-│   ├── agent/         ローカル LLM 用ツールループ
-│   └── connect/       他ランタイムへの設定書き込み
-└── mainview/        WebView（ファイルシステム権限を持たない）
-```
-
-詳細は [アーキテクチャ](docs/ARCHITECTURE.md)、
-OKF 準拠状況は [CONFORMANCE.md](docs/CONFORMANCE.md)。
-
----
-
-## 開発
+macOS / Linux:
 
 ```bash
-bun install
-bun run dev              # 起動（ソースから）
-bun run check            # typecheck + テスト
-bun test                 # 486 テスト / 22 ファイル
-bun run build            # デスクトップ版のパッケージング
-bun run build:headless   # ヘッドレス実行ファイル（94 MB・単一ファイル）
-bun run size             # サイズレポート
-bun run bench:workload <bundle> 100   # 実運用ワークロードで計測
+bun install && bun run setup:unix
 ```
 
-| 対象 | サイズ |
-|------|-------:|
-| Bun メインプロセス | 419 KB |
-| MCP サーバー（単体） | 233 KB |
-| WebView バンドル（HTML+CSS+JS） | 148 KB |
+Individual builds:
+
+```bash
+bun run build          # desktop app
+bun run build:cli      # single-file `okf` executable
+bun run build:headless # MCP server, no window
+```
 
 ---
 
-## 既知の限界
+## The three layers
 
-- **デスクトップ版のメモリは Obsidian に劣ります**（607 対 424 MB）。
-  WebView2 の 6 プロセスと Bun の常駐が支配的で、アプリコードの最適化では
-  埋まりません。エージェント用途ではヘッドレス（129 MB）を使ってください
-- **大規模での挙動は未測定** — 300 ノートまでしか計測していません
-- **macOS / Linux は未検証** — スクリプトは実装済みですが実機確認していません
-- グラフビュー、Canvas、プラグイン機構、モバイル、同期はありません
+```
+bundle/
+├── raw/       Layer 1 — source material, as it arrived
+├── wiki/      Layer 2 — the canonical, curated knowledge
+└── .rag/      Layer 3 — derived search index (rebuildable, never hand-edited)
+```
+
+Karpathy's LLM Wiki pattern. **There are exactly three layers.**
+
+Who may write where:
+
+| | `raw/` | `wiki/` | `.rag/` |
+|---|---|---|---|
+| Human | yes | yes | through the app |
+| Agent | **no** | yes | through the app |
+
+`raw/` is the human's inbox: you put originals there, and imports from Notion,
+GitHub or Google Drive land there. An agent cannot write to it, so the record
+of what actually arrived can never be rewritten by the thing summarising it.
+Within `wiki/` both may create, edit and move files; only a human promotes
+something out of `raw/`.
+
+### Inside `wiki/`
+
+```
+wiki/
+├── MAP.md         Where everything is. Read this first.
+├── human.md       Who the user is
+├── Task.md        Open work, and recently finished work
+├── AGENTS.md      The full contract for agents
+├── 1-projects/    PARA — active, has an end
+├── 2-areas/       PARA — ongoing interest, no deadline
+├── 3-resources/   PARA — useful knowledge (default)
+├── 4-archive/     PARA — not currently in use
+├── skills/        <category>/<name>/SKILL.md
+├── loops/         One repeatable-task design per file
+├── index.md       OKF §8 reserved
+└── log.md         OKF §9 reserved
+```
+
+Those first four files, plus `skills/` and `loops/`, are not layers — they are
+wiki content. None of them is indexed as knowledge, so a task list or someone's
+personal details never turn up in a search for facts.
+
+**PARA sets search rank.** The same hit scores higher in `1-projects/` than in
+`4-archive/`, and archived pages are excluded from skill selection entirely.
 
 ---
 
-## ライセンス
+## How an agent orients itself
 
-MIT
+The problem: an agent that knows nothing has to read widely just to discover
+where things are, and pays that cost on every session.
+
+`MAP.md` is a small routing table naming the one file or tool that answers each
+kind of question. Measured on a real bundle: **MAP is 522 tokens, while reading
+all four orientation files is 2342.** Routing through MAP and then opening the
+one file you need costs roughly 30% of reading everything. Its generated half
+is rendered from the code that implements the layout, so it cannot drift.
+
+The same idea runs through the rest:
+
+- **SkillSpace** — agents see only each skill's name and description, and open
+  a body only once they have chosen it. Measured 58% fewer tokens than loading
+  every procedure up front.
+- **`list_tasks`** — returns open work by default. Completed tasks are the bulk
+  of the file and almost never what was wanted.
+- **Loops** — one repeatable task is one file. The last 5 runs keep their full
+  journal, the next 20 collapse to a line each, older ones to a count.
+
+---
+
+## Connecting an agent
+
+One panel, one page, three sections.
+
+**Agent hosts** — they speak MCP, so one entry is added to their own config
+file, after a backup and after showing you the exact diff: Claude Code, Codex,
+opencode, Hermes Agent.
+
+**Local model servers** — Ollama and llama.cpp are *not* MCP clients. They emit
+tool calls with nothing to execute them, so this app runs the agent loop
+itself, with the token spend shown as it happens.
+
+**External services** — Notion, GitHub, Google Drive, or anything else that
+speaks MCP. The tool list and its argument form are built from whatever the
+server declares in its JSON Schema, so there is no per-service code. Everything
+imported lands in `raw/`.
+
+Credentials are never typed into this app. It shows you where the config file
+lives and you edit it there.
+
+---
+
+## The CLI
+
+```bash
+okf ask "what is the LLM wiki pattern"   # retrieve, with sources
+okf search "design" --limit 5
+okf map                                  # the routing table
+okf tasks                                # open work
+okf todo "finish the docs" --para project
+okf lint                                 # OKF conformance
+okf serve                                # run as an MCP server
+```
+
+Exit codes carry meaning: `0` fine, `1` the tool failed, `2` you called it
+wrong — so an agent can tell "fix the arguments" from "the target is bad".
+`--json` gives a machine-readable envelope on stdout while errors stay on
+stderr.
+
+### RMUX
+
+For work that outlives a single tool call — reindexing a large bundle, a local
+model run — an MCP call that blocks for minutes is a call that times out. That
+work belongs in a terminal session you can leave and come back to.
+
+```bash
+okf rmux setup            # a session with a shell and a live log tail
+okf rmux run rebuild-rag  # runs to completion, returns the full output
+okf rmux capture          # read a window
+```
+
+`run` is built on `collect-pane-output --until-pane-exit`: it returns exactly
+when the command does — no polling, no marker injected into your command line —
+and it returns the byte stream rather than the visible screen, so a
+757-character line arrives intact.
+
+Verified end to end against rmux 0.9.1 built from source. **The Windows
+prebuilt of 0.9.1 is broken**: it ships `rmux.exe` without the helper binary it
+needs, so `rmux -V` reports a version while every command that starts a server
+fails. Use `cargo install rmux --locked`. Details in
+[docs/ja/cli.md](docs/ja/cli.md).
+
+---
+
+## The desktop app
+
+- **Reading view first.** Opening a document shows it rendered, not as raw
+  markup — frontmatter and link syntax are not the first thing you should see
+  on a page you came to read. Toggle in the toolbar.
+- **One writing surface.** The editor and the preview are the same pane rather
+  than two columns.
+- **Format bar** — headings, bold, italic, strikethrough, code, lists, task
+  lists, quote, link, table, horizontal rule, alignment.
+- **Width slider.** The text column is full width by default; set it where you
+  want and it persists.
+- **Pasting keeps Markdown.** HTML from another tool is converted rather than
+  flattened.
+- Wikilinks with autocomplete, backlinks, and an unresolved-link report.
+- Full-text search with **CJK bigram indexing**, so Japanese matches properly
+  rather than only on whitespace-delimited words.
+
+Shortcuts: `Ctrl+S` save · `Ctrl+P` quick switcher · `Ctrl+Shift+P` command
+palette · `Ctrl+K` search · `Ctrl+O` open a bundle.
+
+The interface is Japanese. UTF-8 is pinned explicitly throughout rather than
+inferred — earlier builds mojibaked on Windows, and encoding is now handled at
+every boundary instead of being left to a default.
+
+---
+
+## Standards
+
+**Open Knowledge Format v0.2.** Every concept is Markdown with YAML
+frontmatter carrying a non-empty `type`; `index.md` and `log.md` are reserved
+and carry no frontmatter. Conformance is checked on write and on demand
+(`okf lint`). A clause-by-clause audit is in
+[docs/CONFORMANCE.md](docs/CONFORMANCE.md).
+
+The format *is* the storage. There is no separate database that could drift
+from it: `.rag/` is derived and can be deleted and rebuilt at any time.
+
+---
+
+## Built with
+
+Electrobun (system WebView, no bundled Chromium) · Bun · Vite · TypeScript
+strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
+
+602 tests, all passing. Typecheck clean on both configurations.
+
+---
+
+## Documentation
+
+| Document | What it covers |
+|---|---|
+| [Usage 日本語](docs/ja/usage.md) · [EN](docs/en/usage.md) | Every screen, every operation, troubleshooting |
+| [Workflows 日本語](docs/ja/workflows.md) · [EN](docs/en/workflows.md) | Practical recipes end to end |
+| [SkillSpace 日本語](docs/ja/skillspace.md) · [EN](docs/en/skillspace.md) | Skills, loops, connecting agents |
+| [okf CLI](docs/ja/cli.md) | Command line, exit codes, RMUX |
+| [OKF v0.2 日本語](docs/ja/okf.md) · [EN](docs/en/okf.md) | The format, field by field |
+| [LLM Wiki 日本語](docs/ja/llm-wiki.md) · [EN](docs/en/llm-wiki.md) | The pattern, and where this departs from it |
+| [Benchmark](docs/BENCHMARK.md) | Method and raw data |
+| [Conformance](docs/CONFORMANCE.md) | OKF audit, clause by clause |
+| [Architecture](docs/ARCHITECTURE.md) | How the code fits together |
+
 
