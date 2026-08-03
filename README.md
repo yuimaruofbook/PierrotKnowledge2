@@ -1,6 +1,6 @@
 # PierrotKnowledge2
-This is an ultra-lightweight local knowledge base compliant with OKF v0.2 and LLMwiki. Unlike its predecessor, this version prioritizes functionality over excessive security.
-Embodying the concept of being "as light as air," it is designed to allow data to be saved from anywhere.
+An ultra-lightweight local knowledge base compliant with OKF v0.2 and LLMwiki.
+Designed around the philosophy of being "as light as air," this version sheds restrictive constraints to prioritize seamless utility—enabling effortless data capture from anywhere.
 
 "Let them laugh. The fool sees what the crowd ignores."
 
