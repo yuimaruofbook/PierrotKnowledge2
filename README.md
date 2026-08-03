@@ -6,7 +6,7 @@ Designed around the philosophy of being "as light as air," this version sheds re
 
 To get started, please download the software from the release notes.
 
-# OKF Wiki
+# PierrotKnowledge2
 
 A local knowledge base that a person and an AI agent can both work in, using
 the same plain Markdown files as the source of truth.
@@ -19,43 +19,60 @@ years.
 
 ---
 
-## What it is
+## Four ways to run it
 
-Three front ends share one folder and one set of files:
+They are separate processes that share a folder, not a client and a server.
+Nothing coordinates them except the files on disk — which is the whole design:
+there is one write path, so a human edit and an agent edit cannot disagree.
 
-- **A desktop app** — Markdown editor with reading view, wikilinks, backlinks,
-  full-text search and a file tree.
-- **An MCP server** — 37 tools, so Claude Code, Codex, opencode or any other
-  MCP host reads and writes the same wiki you do.
-- **A CLI** (`okf`) — generated from the MCP tool table, so anything an agent
-  can do over MCP it can also do from a terminal.
+| | What it is | Resident memory | Use it when |
+|---|---|---|---|
+| **`PierrotKnowledge2 ui`** | The full interface, served to a browser you already have open | **135 MB** | Normal use. The recommended way. |
+| **Desktop app** | The same interface in its own window | 633 MB | You want a standalone application and will pay 5× the memory |
+| **Headless** | MCP server, no interface at all | **85 MB** | An agent host (Claude Code, Codex…) starts it for you |
+| **CLI** | One command, one answer, exits | — (0.28 s per run) | Scripting, or working next to the window |
 
-All three drive the same `Workspace`. Layer checks, logging and index updates
-exist in exactly one place, so the three cannot disagree about what a document
-says or who was allowed to write it.
+Measured on this machine, Windows 11. Method and raw data:
+[docs/BENCHMARK.md](docs/BENCHMARK.md).
+
+### What each one exposes
+
+The two halves of the application are deliberately separate surfaces:
+
+- **43 RPC methods** — what the interface calls. Desktop and `ui` mode expose
+  this and nothing else.
+- **39 MCP tools** — what an agent calls. Headless exposes this and nothing
+  else, over stdio.
+- **The CLI** reaches every one of the 39 tools plus `info`, `watch`, `ui`,
+  `serve`, `update` and `rmux`.
+
+**The desktop app does not serve MCP.** An agent working alongside you is a
+second process — the headless server, started by the agent's own host — and the
+two meet in the files. That is why an agent's edit shows up in your window a
+moment later rather than through any connection between them.
 
 ---
 
-## Honest numbers first
+## Honest numbers
 
-Windows 11, 300 notes (1.3 MB), the identical corpus in both applications.
-Method and raw data: [docs/BENCHMARK.md](docs/BENCHMARK.md).
-
-| | OKF headless | OKF desktop | Obsidian |
+| | `ui` mode | Desktop | Obsidian |
 |---|---|---|---|
-| Resident memory | **129 MB** | 607 MB | 424 MB |
-| Install size | **94 MB** | 117 MB | 373 MB |
+| Resident memory | **135 MB** | 633 MB | 424 MB |
+| ├ the app itself | 95 MB | 241 MB | — |
+| └ the page's renderer | 49 MB (browser tab) | 360 MB (WebView2 ×6) | — |
+| Install size | 94 MB | 118 MB | 373 MB |
 
-**The desktop app uses more memory than Obsidian.** That contradicts the
-premise this project started from — that a system WebView would beat a bundled
-Chromium — and it stays at the top of the README rather than buried, because
-the measurement is the measurement. The saving is real on disk (117 MB vs
-373 MB) and real in headless mode, which is what an agent actually runs.
+**The desktop build is not light and never became light.** At 633 MB it is
+heavier than Obsidian. The premise this project began with — that a system
+WebView would beat a bundled Chromium — did not hold: Windows starts six
+WebView2 processes for one window, measured at 360 MB, and Electrobun adds a
+second copy of the Bun runtime. Neither is something this codebase can fix,
+which is why the answer was to stop shipping a window rather than to optimise
+one.
 
-Where the memory goes, measured: WebView2 ≈ 57%, Electrobun ≈ 26%, the Bun
-runtime ≈ 7%, this project's own code ≈ 10%. Of the 117 MB on disk, 111.5 MB is
-`bun.exe`; everything written for this project is 0.6 MB. There is very little
-here left to make smaller.
+Of the 118 MB on disk, 111.5 MB is `bun.exe`. Everything written for this
+project is 0.6 MB of source with a live heap around 10 MB. There is nothing
+left to trim on our side.
 
 ---
 
@@ -68,8 +85,8 @@ SETUP.bat
 ```
 
 Installs dependencies, builds, creates a desktop shortcut and scaffolds a
-bundle. `SETUP.bat -Connect` additionally writes this app into your agent
-host's configuration.
+bundle. `SETUP.bat -Connect` also writes this app into your agent host's
+configuration.
 
 macOS / Linux:
 
@@ -77,13 +94,19 @@ macOS / Linux:
 bun install && bun run setup:unix
 ```
 
-Individual builds:
+Then:
 
-```bash
-bun run build          # desktop app
-bun run build:cli      # single-file `okf` executable
-bun run build:headless # MCP server, no window
 ```
+PierrotKnowledge2 ui        the interface, in your browser
+PierrotKnowledge2 Update    check for a new release
+```
+
+`ui` binds to `127.0.0.1`, mints a token for the run and opens the URL. Nothing
+reaches the network, and no other page in the browser can drive it.
+
+> The command is named after the application rather than `okf` — a short,
+> generic word likely to collide with something else on the same PATH. `okf`
+> still works.
 
 ---
 
@@ -91,12 +114,17 @@ bun run build:headless # MCP server, no window
 
 ```
 bundle/
+├── MAP.md     Where everything is. Read this first.
+├── human.md   Who the user is
+├── Task.md    Open work, and recently finished work
 ├── raw/       Layer 1 — source material, as it arrived
 ├── wiki/      Layer 2 — the canonical, curated knowledge
 └── .rag/      Layer 3 — derived search index (rebuildable, never hand-edited)
 ```
 
-Karpathy's LLM Wiki pattern. **There are exactly three layers.**
+The three files at the top are **not** layers and sit deliberately outside
+them. The layers are three stages of one material — sources, curated
+knowledge, derived index — and these are not that material.
 
 Who may write where:
 
@@ -105,20 +133,17 @@ Who may write where:
 | Human | yes | yes | through the app |
 | Agent | **no** | yes | through the app |
 
-`raw/` is the human's inbox: you put originals there, and imports from Notion,
-GitHub or Google Drive land there. An agent cannot write to it, so the record
-of what actually arrived can never be rewritten by the thing summarising it.
-Within `wiki/` both may create, edit and move files; only a human promotes
-something out of `raw/`.
+`raw/` is the human's inbox: originals go there, and imports from Notion,
+GitHub, Google Drive or Obsidian land there. An agent cannot write to it, so
+the record of what actually arrived can never be rewritten by the thing
+summarising it.
 
 ### Inside `wiki/`
 
 ```
 wiki/
-├── MAP.md         Where everything is. Read this first.
-├── human.md       Who the user is
-├── Task.md        Open work, and recently finished work
 ├── AGENTS.md      The full contract for agents
+├── daily/         One dated note per day
 ├── 1-projects/    PARA — active, has an end
 ├── 2-areas/       PARA — ongoing interest, no deadline
 ├── 3-resources/   PARA — useful knowledge (default)
@@ -129,125 +154,87 @@ wiki/
 └── log.md         OKF §9 reserved
 ```
 
-Those first four files, plus `skills/` and `loops/`, are not layers — they are
-wiki content. None of them is indexed as knowledge, so a task list or someone's
-personal details never turn up in a search for facts.
-
 **PARA sets search rank.** The same hit scores higher in `1-projects/` than in
 `4-archive/`, and archived pages are excluded from skill selection entirely.
 
 ---
 
-## How an agent orients itself
+## Features
 
-The problem: an agent that knows nothing has to read widely just to discover
-where things are, and pays that cost on every session.
+### Writing
 
-`MAP.md` is a small routing table naming the one file or tool that answers each
-kind of question. Measured on a real bundle: **MAP is 522 tokens, while reading
-all four orientation files is 2342.** Routing through MAP and then opening the
-one file you need costs roughly 30% of reading everything. Its generated half
-is rendered from the code that implements the layout, so it cannot drift.
+- **Reading view first.** Opening a document shows it rendered — frontmatter
+  and link syntax are not what you should see on a page you came to read.
+- One writing surface: the editor and the preview are the same pane.
+- Format bar — headings, bold, italic, strikethrough, code, three kinds of
+  list, quote, link, table, rule, alignment. Everything toggles.
+- Width slider, full width by default, persisted.
+- **Pasting keeps Markdown.** HTML from another tool is converted, not
+  flattened.
+- Wikilinks with completion, backlinks, unresolved-link report. Renaming a page
+  rewrites every link to it.
+- Full-text search with **CJK bigram indexing**, so Japanese matches without
+  word boundaries.
 
-The same idea runs through the rest:
+### Daily notes
 
-- **SkillSpace** — agents see only each skill's name and description, and open
-  a body only once they have chosen it. Measured 58% fewer tokens than loading
-  every procedure up front.
-- **`list_tasks`** — returns open work by default. Completed tasks are the bulk
-  of the file and almost never what was wanted.
-- **Loops** — one repeatable task is one file. The last 5 runs keep their full
-  journal, the next 20 collapse to a line each, older ones to a count.
+`wiki/daily/YYYY-MM-DD.md`, one action to open or create. Indexed like any
+other page, so "what did I decide last Tuesday" is answerable.
 
----
+Unchecked items under `## タスク` are moved into `Task.md` by
+`collect_daily_tasks`, then ticked and stamped with the id they became — so
+the transfer is idempotent and a requirement written in a day's notes does not
+vanish tomorrow.
 
-## Connecting an agent
+### For agents
+
+- **`MAP.md`** is a routing table naming the one file that answers each kind of
+  question. Measured: MAP is 522 tokens against 2342 for reading all four
+  orientation files.
+- **SkillSpace** — agents see only each skill's name and description and open a
+  body once chosen. Measured 58% fewer tokens than loading every procedure.
+- **`list_tasks`** returns open work by default.
+- **Loops** — one repeatable task is one file; the last 5 runs keep their full
+  journal, the next 20 collapse to a line, older ones to a count.
+- **RMUX** — work that outlives a single tool call goes in a terminal session.
+  `PierrotKnowledge2 rmux run` returns exactly when the command does, with the
+  byte stream rather than the visible screen.
+
+### Connections
 
 One panel, one page, three sections.
 
-**Agent hosts** — they speak MCP, so one entry is added to their own config
-file, after a backup and after showing you the exact diff: Claude Code, Codex,
-opencode, Hermes Agent.
+- **External services (MCP)** — Notion, GitHub, Google Drive, **Obsidian**, or
+  anything else that speaks the protocol. The tool list and its form are built
+  from whatever the server declares, so there is no per-service code. Imports
+  land in `raw/`.
+- **Agent hosts** — Claude Code, Codex, opencode, Hermes Agent. One entry is
+  added to their own config, after a backup and after showing you the diff.
+- **Local model servers** — Ollama and llama.cpp are *not* MCP clients; they
+  emit tool calls with nothing to execute them, so this app runs the agent loop
+  itself with the token spend shown as it happens.
 
-**Local model servers** — Ollama and llama.cpp are *not* MCP clients. They emit
-tool calls with nothing to execute them, so this app runs the agent loop
-itself, with the token spend shown as it happens.
+Credentials are never typed into this app.
 
-**External services** — Notion, GitHub, Google Drive, or anything else that
-speaks MCP. The tool list and its argument form are built from whatever the
-server declares in its JSON Schema, so there is no per-service code. Everything
-imported lands in `raw/`.
+### Updating
 
-Credentials are never typed into this app. It shows you where the config file
-lives and you edit it there.
-
----
-
-## The CLI
-
-```bash
-okf ask "what is the LLM wiki pattern"   # retrieve, with sources
-okf search "design" --limit 5
-okf map                                  # the routing table
-okf tasks                                # open work
-okf todo "finish the docs" --para project
-okf lint                                 # OKF conformance
-okf serve                                # run as an MCP server
+```
+PierrotKnowledge2 Update           check, verify, show the release notes
+PierrotKnowledge2 Update --apply   install
 ```
 
-Exit codes carry meaning: `0` fine, `1` the tool failed, `2` you called it
-wrong — so an agent can tell "fix the arguments" from "the target is bad".
-`--json` gives a machine-readable envelope on stdout while errors stay on
-stderr.
+When a newer release exists and you are online, the interface shows a pulsing
+indicator; opening it renders the release notes.
 
-### RMUX
+Downloads are verified against the SHA-256 GitHub computes server-side.
+Versions come from a manifest inside the archive rather than the tag, and
+**an update that would go backwards is refused**. Replaced files are moved to a
+timestamped backup, never deleted, and `--rollback` puts them back.
 
-For work that outlives a single tool call — reindexing a large bundle, a local
-model run — an MCP call that blocks for minutes is a call that times out. That
-work belongs in a terminal session you can leave and come back to.
-
-```bash
-okf rmux setup            # a session with a shell and a live log tail
-okf rmux run rebuild-rag  # runs to completion, returns the full output
-okf rmux capture          # read a window
-```
-
-`run` is built on `collect-pane-output --until-pane-exit`: it returns exactly
-when the command does — no polling, no marker injected into your command line —
-and it returns the byte stream rather than the visible screen, so a
-757-character line arrives intact.
-
-Verified end to end against rmux 0.9.1 built from source. **The Windows
-prebuilt of 0.9.1 is broken**: it ships `rmux.exe` without the helper binary it
-needs, so `rmux -V` reports a version while every command that starts a server
-fails. Use `cargo install rmux --locked`. Details in
-[docs/ja/cli.md](docs/ja/cli.md).
-
----
-
-## The desktop app
-
-- **Reading view first.** Opening a document shows it rendered, not as raw
-  markup — frontmatter and link syntax are not the first thing you should see
-  on a page you came to read. Toggle in the toolbar.
-- **One writing surface.** The editor and the preview are the same pane rather
-  than two columns.
-- **Format bar** — headings, bold, italic, strikethrough, code, lists, task
-  lists, quote, link, table, horizontal rule, alignment.
-- **Width slider.** The text column is full width by default; set it where you
-  want and it persists.
-- **Pasting keeps Markdown.** HTML from another tool is converted rather than
-  flattened.
-- Wikilinks with autocomplete, backlinks, and an unresolved-link report.
-- Full-text search with **CJK bigram indexing**, so Japanese matches properly
-  rather than only on whitespace-delimited words.
-
-Shortcuts: `Ctrl+S` save · `Ctrl+P` quick switcher · `Ctrl+Shift+P` command
-palette · `Ctrl+K` search · `Ctrl+O` open a bundle.
-
-The interface is Japanese. UTF-8 is pinned explicitly throughout rather than
-inferred — earlier builds mojibaked on Windows, and encoding is now handled at
-every boundary instead of being left to a default.
+**An update never touches a bundle**: it writes only to an allowlist of paths
+inside the install directory, and refuses outright if a bundle is found inside
+it. Upgrading from before 0.3.0 →
+[docs/ja/upgrade.md](docs/ja/upgrade.md).
 
 ---
 
@@ -255,12 +242,11 @@ every boundary instead of being left to a default.
 
 **Open Knowledge Format v0.2.** Every concept is Markdown with YAML
 frontmatter carrying a non-empty `type`; `index.md` and `log.md` are reserved
-and carry no frontmatter. Conformance is checked on write and on demand
-(`okf lint`). A clause-by-clause audit is in
-[docs/CONFORMANCE.md](docs/CONFORMANCE.md).
+and carry no frontmatter. Conformance is checked on write and on demand.
+Clause-by-clause audit: [docs/CONFORMANCE.md](docs/CONFORMANCE.md).
 
 The format *is* the storage. There is no separate database that could drift
-from it: `.rag/` is derived and can be deleted and rebuilt at any time.
+from it — `.rag/` is derived and can be deleted and rebuilt at any time.
 
 ---
 
@@ -269,7 +255,7 @@ from it: `.rag/` is derived and can be deleted and rebuilt at any time.
 Electrobun (system WebView, no bundled Chromium) · Bun · Vite · TypeScript
 strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
 
-602 tests, all passing. Typecheck clean on both configurations.
+651 tests, all passing. Typecheck clean on both configurations.
 
 ---
 
@@ -278,6 +264,7 @@ strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
 | Document | What it covers |
 |---|---|
 | [Usage 日本語](docs/ja/usage.md) · [EN](docs/en/usage.md) | Every screen, every operation, troubleshooting |
+| [Upgrading 日本語](docs/ja/upgrade.md) | Manual migration from pre-0.3.0, then `PierrotKnowledge2 Update` |
 | [Workflows 日本語](docs/ja/workflows.md) · [EN](docs/en/workflows.md) | Practical recipes end to end |
 | [SkillSpace 日本語](docs/ja/skillspace.md) · [EN](docs/en/skillspace.md) | Skills, loops, connecting agents |
 | [okf CLI](docs/ja/cli.md) | Command line, exit codes, RMUX |
@@ -286,5 +273,4 @@ strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
 | [Benchmark](docs/BENCHMARK.md) | Method and raw data |
 | [Conformance](docs/CONFORMANCE.md) | OKF audit, clause by clause |
 | [Architecture](docs/ARCHITECTURE.md) | How the code fits together |
-
 
