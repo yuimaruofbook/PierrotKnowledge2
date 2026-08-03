@@ -1,7 +1,8 @@
 # PierrotKnowledge2
 A highly lightweight local knowledge base compliant with OKF v0.2 and LLMwiki.
 
-Designed to prioritize functionality over security—unlike its predecessor—its core concept is "as light as air, allowing data storage from anywhere."
+This is an ultra-lightweight local knowledge base compliant with OKF v0.2 and LLMwiki. Unlike its predecessor, this version prioritizes functionality over excessive security.
+Embodying the concept of being "as light as air," it is designed to allow data to be saved from anywhere.
 
 This suite of features is branded as "PierrotKnowledge2" and comprises three main components: OKFwiki (for RAG functionality), plugin management, and compression management.
 
