@@ -2,7 +2,7 @@
 An ultra-lightweight local knowledge base compliant with OKF v0.2 and LLMwiki.
 Designed around the philosophy of being "as light as air," this version sheds restrictive constraints to prioritize seamless utility—enabling effortless data capture from anywhere.
 
-"Let them laugh. The fool sees what the crowd ignores."
+"Let them laugh. The Pierrot sees what the crowd ignores."
 
 This suite of features is branded as "PierrotKnowledge2" and comprises three main components: OKFwiki (for RAG functionality), plugin management, and compression management.
 
