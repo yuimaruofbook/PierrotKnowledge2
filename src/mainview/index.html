@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      No remote origins: the app ships every byte it renders, and note content
+      is untrusted, so the policy blocks exfiltration and injected scripts
+      outright rather than relying on the sanitizer alone.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:*; font-src 'self'"
+    />
+    <title>PierrotKnowledge2</title>
+    <link rel="stylesheet" href="./styles/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <span class="brand">Pierrot<span class="brand-dim">Knowledge2</span></span>
+
+      <div class="toolgroup">
+        <button id="btn-open" class="btn btn-primary" type="button" title="フォルダを開く (Ctrl/Cmd+O)">
+          開く
+        </button>
+        <button id="btn-create" class="btn" type="button" disabled title="新規概念 (Ctrl/Cmd+N)">
+          新規
+        </button>
+        <button id="btn-rebuild" class="btn" type="button" disabled title="index.md と検索インデックスを再構築">
+          再構築
+        </button>
+        <button
+          id="btn-connect"
+          class="btn"
+          type="button"
+          disabled
+          title="外部サービス (MCP)、エージェント接続、ローカル実行"
+        >
+          接続
+        </button>
+        <button
+          id="btn-skills"
+          class="btn"
+          type="button"
+          disabled
+          title="SkillSpace — スキルの管理"
+        >
+          Skill
+        </button>
+        <!--
+          Only appears when a newer release exists. Hidden rather than
+          disabled: a control that is always there and usually does nothing
+          stops being looked at.
+        -->
+        <button id="btn-update" class="btn btn-update" type="button" hidden>
+          <span class="update-dot" aria-hidden="true"></span>
+          アップデート
+        </button>
+      </div>
+
+      <div class="search-field">
+        <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.5" />
+          <path d="M10.5 10.5 L14 14" />
+        </svg>
+        <input
+          id="search"
+          type="search"
+          placeholder="検索…"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="全文検索"
+        />
+        <kbd class="hint">Ctrl K</kbd>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <div class="panel-head">ファイル</div>
+        <ul id="tree" class="tree"></ul>
+        <div id="tag-bar" class="tag-bar" hidden></div>
+      </aside>
+
+      <main class="main">
+        <div class="toolbar">
+          <span id="current-path" class="path"></span>
+          <span id="meta" class="meta"></span>
+          <span class="spacer"></span>
+
+          <div id="mode-group" class="segmented" role="group" aria-label="表示モード">
+            <button type="button" data-mode="edit" class="active" aria-pressed="true">編集</button>
+            <button type="button" data-mode="preview">プレビュー</button>
+          </div>
+
+          <button id="btn-save" class="btn" type="button" disabled title="保存 (Ctrl/Cmd+S)">
+            保存
+          </button>
+        </div>
+
+        <!--
+          Formatting bar. Every button rewrites the Markdown source directly —
+          there is no second representation that could drift from the file.
+          Buttons carry data-format, matching FormatAction in shared/.
+        -->
+        <div id="format-bar" class="format-bar" role="toolbar" aria-label="書式">
+          <div class="format-group">
+            <button type="button" data-format="h1" title="見出し 1" class="fmt fmt-h">H1</button>
+            <button type="button" data-format="h2" title="見出し 2" class="fmt fmt-h">H2</button>
+            <button type="button" data-format="h3" title="見出し 3" class="fmt fmt-h">H3</button>
+            <button type="button" data-format="paragraph" title="書式を外して本文に戻す" class="fmt">本文</button>
+          </div>
+
+          <div class="format-group">
+            <button type="button" data-format="bold" title="太字 (Ctrl+B)" class="fmt fmt-bold">B</button>
+            <button type="button" data-format="italic" title="斜体 (Ctrl+I)" class="fmt fmt-italic">I</button>
+            <button type="button" data-format="strike" title="取り消し線" class="fmt fmt-strike">S</button>
+            <button type="button" data-format="code" title="インラインコード" class="fmt fmt-code">&lt;/&gt;</button>
+          </div>
+
+          <div class="format-group">
+            <button type="button" data-format="link" title="リンク" class="fmt">リンク</button>
+            <button type="button" data-format="quote" title="引用" class="fmt">引用</button>
+          </div>
+
+          <div class="format-group">
+            <button type="button" data-format="ul" title="箇条書き" class="fmt" aria-label="箇条書き">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="2.5" cy="4" r="1.2"/><circle cx="2.5" cy="8" r="1.2"/><circle cx="2.5" cy="12" r="1.2"/><path d="M6 4h8M6 8h8M6 12h8"/></svg>
+            </button>
+            <button type="button" data-format="ol" title="番号付きリスト" class="fmt" aria-label="番号付きリスト">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 4h8M6 8h8M6 12h8"/><text x="1" y="5.5">1</text><text x="1" y="9.5">2</text><text x="1" y="13.5">3</text></svg>
+            </button>
+            <button type="button" data-format="task" title="チェックリスト" class="fmt" aria-label="チェックリスト">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1" y="2.5" width="3.4" height="3.4"/><rect x="1" y="9.5" width="3.4" height="3.4"/><path d="M7 4.2h8M7 11.2h8"/></svg>
+            </button>
+          </div>
+
+          <!--
+            Alignment is emitted as <div align>, because Markdown has no syntax
+            for it and that wrapper is the one every major renderer honours.
+          -->
+          <div class="format-group">
+            <button type="button" data-format="align-left" title="左揃え" class="fmt" aria-label="左揃え">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 3h14M1 6.5h9M1 10h14M1 13.5h9"/></svg>
+            </button>
+            <button type="button" data-format="align-center" title="中央揃え" class="fmt" aria-label="中央揃え">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 3h14M3.5 6.5h9M1 10h14M3.5 13.5h9"/></svg>
+            </button>
+            <button type="button" data-format="align-right" title="右揃え" class="fmt" aria-label="右揃え">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 3h14M6 6.5h9M1 10h14M6 13.5h9"/></svg>
+            </button>
+          </div>
+
+          <div class="format-group">
+            <button type="button" data-format="hr" title="区切り線" class="fmt" aria-label="区切り線">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1 8h14"/></svg>
+            </button>
+            <button type="button" data-format="table" title="表" class="fmt" aria-label="表">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10"/><path d="M1.5 6.5h13M6 3v10M10.5 3v10"/></svg>
+            </button>
+          </div>
+
+          <!--
+            Column width. Sits at the far end because it is a preference, not
+            an editing command — and it is the one control here that changes
+            nothing about the file.
+          -->
+          <div class="format-group format-width">
+            <label for="width-slider" class="width-label">幅</label>
+            <input
+              id="width-slider"
+              type="range"
+              min="40"
+              max="100"
+              step="5"
+              value="100"
+              aria-label="本文の表示幅"
+            />
+            <output id="width-readout" for="width-slider" class="width-readout">100%</output>
+          </div>
+        </div>
+
+        <div class="stage">
+          <div id="pane" class="pane" data-mode="edit">
+            <textarea
+              id="editor"
+              spellcheck="false"
+              placeholder="Markdown で書きはじめる…"
+              aria-label="Markdown source"
+            ></textarea>
+            <article id="preview" class="preview"></article>
+            <ul id="autocomplete" class="autocomplete" hidden></ul>
+            <div id="binary-notice" class="binary-notice" hidden></div>
+          </div>
+
+          <!-- Shown until a document is open; hidden by main.ts thereafter. -->
+          <section id="empty-state" class="empty-state">
+            <div class="empty-mark" aria-hidden="true">
+              <svg viewBox="0 0 100 100">
+                <line x1="50" y1="30" x2="30" y2="66" />
+                <line x1="50" y1="30" x2="70" y2="66" />
+                <line x1="30" y1="66" x2="70" y2="66" />
+                <circle cx="50" cy="30" r="10" class="node-fill" />
+                <circle cx="30" cy="66" r="8" class="node-accent" />
+                <circle cx="70" cy="66" r="8" class="node-fill" />
+              </svg>
+            </div>
+            <h1 class="empty-title">ローカルの Markdown が、正本。</h1>
+            <p class="empty-lede">
+              人間のエディタ操作と AI エージェントの MCP 操作は、<br />
+              同じファイル・同じ書き込み経路を通ります。
+            </p>
+            <div class="empty-actions">
+              <button id="btn-open-empty" class="btn btn-primary btn-lg" type="button">
+                フォルダを開く
+              </button>
+            </div>
+            <dl class="shortcuts">
+              <div><dt><kbd>Ctrl</kbd><kbd>P</kbd></dt><dd>ノートを検索して開く</dd></div>
+              <div><dt><kbd>Ctrl</kbd><kbd>K</kbd></dt><dd>全文検索</dd></div>
+              <div><dt><kbd>Ctrl</kbd><kbd>⇧</kbd><kbd>P</kbd></dt><dd>コマンドパレット</dd></div>
+              <div><dt><kbd>[[</kbd></dt><dd>ウィキリンク補完</dd></div>
+            </dl>
+          </section>
+        </div>
+
+        <section id="backlinks" class="backlinks"></section>
+      </main>
+
+      <aside id="search-panel" class="search-panel" hidden>
+        <div class="panel-head">検索結果</div>
+        <div id="hits-empty" class="empty" hidden>一致なし</div>
+        <ul id="hits" class="hits"></ul>
+      </aside>
+    </div>
+
+    <footer class="statusbar">
+      <span id="bundle-name" class="bundle-name"></span>
+      <span class="spacer"></span>
+      <span id="status" class="status" data-tone="info"></span>
+    </footer>
+
+    <div id="palette" class="palette-backdrop" hidden>
+      <div class="palette">
+        <input
+          id="palette-input"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Quick switcher"
+        />
+        <div id="palette-empty" class="empty" hidden>一致なし</div>
+        <ul id="palette-list" class="palette-list"></ul>
+      </div>
+    </div>
+
+    <!--
+      外部 MCP サーバー（Notion / GitHub / Google Drive …）との接続。
+      取り込んだ内容は raw/ にのみ保存され、wiki/ には自動で入らない。
+    -->
+    <!--
+      接続。外部 MCP・エージェント接続・ローカル実行を 1 ページに並べる。
+      タブで分けると「いま何に繋がっているか」が一度に見えないため。
+      各セクションは独立して再描画する（入力途中のフォームを消さないため）。
+    -->
+    <div id="connections" class="palette-backdrop" hidden>
+      <div class="connections">
+        <header class="connections-head">
+          <span>接続</span>
+          <button id="connections-close" class="icon-btn" type="button" aria-label="閉じる">
+            ×
+          </button>
+        </header>
+        <div id="connections-body" class="connections-page"></div>
+      </div>
+    </div>
+
+    <!--
+      SkillSpace。エージェントは「名前と説明」だけを常時読み、必要と判断した
+      スキルの本文だけを展開する。接続に関わるものは「接続」パネルに集約した。
+    -->
+    <div id="skills" class="palette-backdrop" hidden>
+      <div class="connections">
+        <header class="connections-head">
+          <span>SkillSpace</span>
+          <button id="skills-close" class="icon-btn" type="button" aria-label="閉じる">×</button>
+        </header>
+        <div id="skills-body" class="skills-body"></div>
+      </div>
+    </div>
+
+    <!--
+      What changed. The release notes are shown before anyone is told how to
+      install, so the decision is made on content rather than on a version
+      number that means nothing on its own.
+    -->
+    <div id="update" class="palette-backdrop" hidden>
+      <div class="connections">
+        <header class="connections-head">
+          <span id="update-title">アップデート</span>
+          <button id="update-close" class="icon-btn" type="button" aria-label="閉じる">×</button>
+        </header>
+        <div id="update-body" class="update-body"></div>
+      </div>
+    </div>
+
+    <div id="context-menu" class="context-menu" hidden></div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
