@@ -117,12 +117,22 @@ macOS / Linux:
 bun install && bun run setup:unix
 ```
 
-Then:
+Then, **from the folder you installed into**:
 
+```powershell
+.\PierrotKnowledge2 ui        the interface, in your browser
+.\PierrotKnowledge2 Update    check for a new release
 ```
-PierrotKnowledge2 ui        the interface, in your browser
-PierrotKnowledge2 Update    check for a new release
+
+```bash
+./PierrotKnowledge2 ui        # macOS / Linux
 ```
+
+> **The `.\` is not optional.** Setup does not put this folder on your `PATH`,
+> and PowerShell never runs a program from the current directory without being
+> told to — a bare `PierrotKnowledge2 Update` answers
+> `CommandNotFoundException`. Add the folder to `PATH` yourself if you would
+> rather type it without the prefix.
 
 `ui` binds to `127.0.0.1`, mints a token for the run and opens the URL. Nothing
 reaches the network, and no other page in the browser can drive it.
@@ -266,9 +276,9 @@ Credentials are never typed into this app.
 
 ### Updating
 
-```
-PierrotKnowledge2 Update           check, verify, show the release notes
-PierrotKnowledge2 Update --apply   install
+```powershell
+.\PierrotKnowledge2 Update           check, verify, show the release notes
+.\PierrotKnowledge2 Update --apply   install
 ```
 
 When a newer release exists and you are online, the interface shows a pulsing
@@ -276,9 +286,9 @@ indicator; opening it renders the release notes.
 
 ### Uninstalling
 
-```
-PierrotKnowledge2 Uninstall           show the plan
-PierrotKnowledge2 Uninstall --apply   carry it out
+```powershell
+.\PierrotKnowledge2 Uninstall           show the plan
+.\PierrotKnowledge2 Uninstall --apply   carry it out
 ```
 
 The plan lists what **survives** before it lists what goes, because that is the
@@ -332,6 +342,12 @@ a path when there is no desktop session.
 
 ---
 
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+---
+
 ## Documentation
 
 | Document | What it covers |
@@ -347,4 +363,3 @@ a path when there is no desktop session.
 | [Benchmark](docs/BENCHMARK.md) | Method and raw data |
 | [Conformance](docs/CONFORMANCE.md) | OKF audit, clause by clause |
 | [Architecture](docs/ARCHITECTURE.md) | How the code fits together |
-
