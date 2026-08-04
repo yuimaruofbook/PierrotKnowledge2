@@ -1,12 +1,4 @@
 # PierrotKnowledge2
-An ultra-lightweight local knowledge base compliant with OKF v0.2 and LLMwiki.
-Designed around the philosophy of being "as light as air," this version sheds restrictive constraints to prioritize seamless utility—enabling effortless data capture from anywhere.
-
-"Let them laugh. The Pierrot sees what the crowd ignores."
-
-To get started, please download the software from the release notes.
-
-# PierrotKnowledge2
 
 A local knowledge base that a person and an AI agent can both work in, using
 the same plain Markdown files as the source of truth.
@@ -25,13 +17,25 @@ They are separate processes that share a folder, not a client and a server.
 Nothing coordinates them except the files on disk — which is the whole design:
 there is one write path, so a human edit and an agent edit cannot disagree.
 
-| | What it is | Resident memory | Use it when |
+| | What it is | Who runs it | Resident memory |
 |---|---|---|---|
-| **`PierrotKnowledge2 ui`** | The full interface, served to a browser you already have open | **135 MB** | Normal use |
-| **Headless** | MCP server, no interface at all | **85 MB** | An agent host (Claude Code, Codex…) starts it for you |
-| **CLI** | One command, one answer, exits | — (0.28 s per run) | Scripting, or working next to the page |
+| **`ui`** | The full interface, served to a browser you already have open | **you** | **135 MB** |
+| **Headless** | MCP server over stdio, no interface at all | **an agent** | **85 MB** |
+| **CLI** | One command, one answer, exits | either | — (0.28 s per run) |
 
-There was a fourth: a packaged desktop window, removed at 0.5.0. See
+**Agents run headless. Always.** An agent host — Claude Code, Codex, opencode,
+Hermes — spawns `build/headless/okf-mcp.exe` itself and talks to it over stdio.
+It is one process with no page attached, which is where the difference between
+85 MB and 135 MB comes from. Never point an agent at `ui` mode: that interface
+speaks RPC to a browser, not MCP, and there is nothing there for an agent to
+call.
+
+Build it with `bun run build:headless` (`SETUP.bat -Connect` does it for you)
+and register it from the connections panel. Without that binary the config
+written for an agent falls back to `bun run …/standalone.ts`, which works only
+where the agent host's own environment has Bun on `PATH`.
+
+There was a fourth mode: a packaged desktop window, removed at 0.5.0. See
 [Honest numbers](#honest-numbers) for why.
 
 Measured on this machine, Windows 11. Method and raw data:
@@ -234,8 +238,8 @@ vanish tomorrow.
 - **Loops** — one repeatable task is one file; the last 5 runs keep their full
   journal, the next 20 collapse to a line, older ones to a count.
 - **RMUX** — work that outlives a single tool call goes in a terminal session.
-  `PierrotKnowledge2 rmux run` returns exactly when the command does, with the
-  byte stream rather than the visible screen.
+  `.\PierrotKnowledge2 rmux run` returns exactly when the command does, with
+  the byte stream rather than the visible screen.
 
 ### Connections
 
@@ -258,6 +262,13 @@ One panel, one page, three sections.
   Hosts whose CLI is not on `PATH` are skipped rather than littered with a
   config for a tool that is not there — a checkbox includes them, for a real
   install the probe cannot see (Cursor on Windows, usually).
+- **Anything else local that speaks MCP** — `PierrotKnowledge2 mcp-config`
+  prints the entry to paste, in the dialect you ask for (`--format json | toml
+  | opencode | yaml | command`). It is built from the same `serverSpecFor` the
+  one-press connection uses, so a pasted config and a written one cannot
+  describe different servers. Printed rather than written, because editing a
+  config whose shape has not been verified is how a connection ends up looking
+  successful while the tool never reads it.
 - **Orchestrators** — [Orca](https://github.com/stablyai/orca) has no MCP
   config of its own; it runs Codex, Claude Code, opencode or Pi each in its own
   git worktree. Connect the underlying agent, and use a **user-scoped** entry:
@@ -283,6 +294,12 @@ Credentials are never typed into this app.
 
 When a newer release exists and you are online, the interface shows a pulsing
 indicator; opening it renders the release notes.
+
+An update replaces source, never `build/` — so anything you compiled is still
+the previous release until you rebuild it, and the launcher and every agent
+host *prefer* those compiled copies. `--apply` names each stale binary and the
+command that rebuilds it rather than leaving you with a new version that
+nothing is running.
 
 ### Uninstalling
 
@@ -338,7 +355,7 @@ and is not known. The one place the OS is touched directly is the folder dialog
 (`powershell` / `osascript` / `zenity` or `kdialog`), and it degrades to typing
 a path when there is no desktop session.
 
-726 tests, all passing. Typecheck clean on both configurations.
+735 tests, all passing. Typecheck clean on both configurations.
 
 ---
 

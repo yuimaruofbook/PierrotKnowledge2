@@ -1,0 +1,10 @@
+{
+  "//": "Webview side. DOM only, no Bun types — the view has no filesystem, so it must not be able to type-check as if it did.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": []
+  },
+  "include": ["src/mainview/**/*", "src/shared/**/*", "src/types/**/*"],
+  "exclude": ["node_modules", "src/mainview/dist"]
+}

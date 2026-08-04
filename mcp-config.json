@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "okf-wiki": {
+      "command": "C:/Users/knsr1/Desktop/Pierrot KnowledgeV2/build/headless/okf-mcp.exe",
+      "args": [],
+      "env": {
+        "OKF_BUNDLE": "C:/Users/knsr1/Documents/OKF Wiki"
+      }
+    }
+  }
+}
+

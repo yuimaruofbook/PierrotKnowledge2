@@ -1,0 +1,39 @@
+{
+  "//": "Bun side: main process, MCP server and tests. No DOM lib — a DOM global reaching this code would be a bug, not a convenience.",
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "Preserve",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": ["bun"],
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    // On since 0.5.0. It was held off because the desktop shell this project
+    // used to ship published raw .ts rather than .d.ts, so skipLibCheck could
+    // not shield us and its source flooded the build with errors we could not
+    // fix. The code was written to satisfy it all along — optional keys are
+    // spread in, never set to undefined — so dropping that dependency cost
+    // nothing to switch on.
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "noEmit": true
+  },
+  "include": [
+    "src/bun/**/*",
+    "src/shared/**/*",
+    "src/types/**/*",
+    "scripts/**/*",
+    "test/**/*",
+    "*.config.ts"
+  ],
+  "exclude": ["node_modules", "build", "artifacts", "src/mainview/dist"]
+}
