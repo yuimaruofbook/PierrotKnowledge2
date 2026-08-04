@@ -208,11 +208,26 @@ One panel, one page, three sections.
   anything else that speaks the protocol. The tool list and its form are built
   from whatever the server declares, so there is no per-service code. Imports
   land in `raw/`.
-- **Agent hosts** — Claude Code, Codex, opencode, Hermes Agent. One entry is
-  added to their own config, after a backup and after showing you the diff.
-- **Local model servers** — Ollama and llama.cpp are *not* MCP clients; they
-  emit tool calls with nothing to execute them, so this app runs the agent loop
-  itself with the token spend shown as it happens.
+- **Agent hosts** (9) — Claude Code, Codex, opencode, Hermes Agent, Cursor and
+  Antigravity, most offered in both a **bundle-scoped** and a **user-scoped**
+  form. One entry is added to their own config, after a backup and after
+  showing you the diff. Claude Code's user scope is the exception: it lives in
+  `~/.claude.json` alongside project state and server toggles, so the app shows
+  you the `claude mcp add` command rather than rewriting a file that big to add
+  one line.
+- **Orchestrators** — [Orca](https://github.com/stablyai/orca) has no MCP
+  config of its own; it runs Codex, Claude Code, opencode or Pi each in its own
+  git worktree. Connect the underlying agent, and use a **user-scoped** entry:
+  a worktree is never the bundle directory, so project-scoped config is never
+  found there. For Claude Code that scope lives in `~/.claude.json`, which also
+  holds project state — so this app shows you the `claude mcp add` command
+  rather than editing that file.
+- **Local model servers** (4) — Ollama, llama.cpp, LM Studio and vLLM are
+  *not* MCP clients; they emit tool calls with nothing to execute them, so this
+  app runs the agent loop itself with the token spend shown as it happens.
+  Ports and required flags come from each vendor own docs — vLLM in particular
+  ignores every tool unless started with both `--enable-auto-tool-choice` and
+  `--tool-call-parser`.
 
 Credentials are never typed into this app.
 
@@ -225,6 +240,24 @@ PierrotKnowledge2 Update --apply   install
 
 When a newer release exists and you are online, the interface shows a pulsing
 indicator; opening it renders the release notes.
+
+### Uninstalling
+
+```
+PierrotKnowledge2 Uninstall           show the plan
+PierrotKnowledge2 Uninstall --apply   carry it out
+```
+
+The plan lists what **survives** before it lists what goes, because that is the
+only question anyone uninstalling has. Bundles are never touched, and a bundle
+found inside the install directory aborts the whole thing. What it does do is
+the tedious part: take our entry back out of every agent host config, so none
+of them reports a broken MCP server for a program that no longer exists. Those
+files are backed up before being edited. The install folder itself is left for
+you to delete once the app has stopped — a running process cannot remove its
+own executable.
+
+---
 
 Downloads are verified against the SHA-256 GitHub computes server-side.
 Versions come from a manifest inside the archive rather than the tag, and
@@ -255,7 +288,12 @@ from it — `.rag/` is derived and can be deleted and rebuilt at any time.
 Electrobun (system WebView, no bundled Chromium) · Bun · Vite · TypeScript
 strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
 
-651 tests, all passing. Typecheck clean on both configurations.
+**Developed and measured on Windows.** macOS and Linux are handled in the code
+and adjusted for, but the desktop build in particular is unverified on them —
+see [docs/ja/platforms.md](docs/ja/platforms.md) for what is and is not known.
+`PierrotKnowledge2 ui` is the mode with the fewest platform dependencies.
+
+673 tests, all passing. Typecheck clean on both configurations.
 
 ---
 
@@ -265,6 +303,7 @@ strict · SQLite FTS5 with BM25 · MCP over NDJSON stdio.
 |---|---|
 | [Usage 日本語](docs/ja/usage.md) · [EN](docs/en/usage.md) | Every screen, every operation, troubleshooting |
 | [Upgrading 日本語](docs/ja/upgrade.md) | Manual migration from pre-0.3.0, then `PierrotKnowledge2 Update` |
+| [Platforms 日本語](docs/ja/platforms.md) | macOS / Linux notes, and what is **not** verified |
 | [Workflows 日本語](docs/ja/workflows.md) · [EN](docs/en/workflows.md) | Practical recipes end to end |
 | [SkillSpace 日本語](docs/ja/skillspace.md) · [EN](docs/en/skillspace.md) | Skills, loops, connecting agents |
 | [okf CLI](docs/ja/cli.md) | Command line, exit codes, RMUX |
