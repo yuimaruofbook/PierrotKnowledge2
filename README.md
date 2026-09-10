@@ -47,9 +47,9 @@ The two halves of the application are deliberately separate surfaces:
 
 - **44 RPC methods** — what the interface calls. `ui` mode exposes this and
   nothing else.
-- **39 MCP tools** — what an agent calls. Headless exposes this and nothing
+- **41 MCP tools** — what an agent calls. Headless exposes this and nothing
   else, over stdio.
-- **The CLI** reaches every one of the 39 tools plus `info`, `watch`, `ui`,
+- **The CLI** reaches every one of the 41 tools plus `info`, `watch`, `ui`,
   `serve`, `update` and `rmux`.
 
 **The interface does not serve MCP.** An agent working alongside you is a
@@ -105,21 +105,35 @@ to trim on our side.
 
 ## Install
 
-Requires [Bun](https://bun.sh). On Windows:
+One command per platform. Bun is installed for you if it is not already there.
+
+**Windows** — double-click `SETUP.bat`, or:
 
 ```
 SETUP.bat
 ```
 
-Installs dependencies, builds the interface, creates a desktop shortcut and
-scaffolds a bundle. `SETUP.bat -Connect` also writes this app into your agent
-host's configuration.
-
-macOS / Linux:
+**macOS / Linux** — from the folder you unzipped into:
 
 ```bash
-bun install && bun run setup:unix
+bash SETUP.command
 ```
+
+> **`bash`, not `./`.** The current release ships with the executable bit set,
+> so `./SETUP.command` works too — but `bash` works no matter how the copy on
+> disk got there. Setup also clears macOS's quarantine flag, so double-clicking
+> works from then on.
+
+Either one installs dependencies, builds the interface, scaffolds a starter
+bundle and puts a launcher on the Desktop. Both are safe to re-run.
+
+Add `-Connect` (Windows) or `--connect` (macOS / Linux) to also register this
+bundle with every agent host found on the machine — Claude Code, Codex,
+opencode and the rest. Each tool's own config is backed up before one entry is
+added, and nothing else in it is touched.
+
+To remove it later, `UNINSTALL.bat` or `bash UNINSTALL.command`. Both show a
+plan first and delete nothing until you agree; your notes are never in it.
 
 Then, **from the folder you installed into**:
 
@@ -303,9 +317,17 @@ nothing is running.
 
 ### Uninstalling
 
+Double-click `UNINSTALL.bat` (Windows) or run `bash UNINSTALL.command`
+(macOS / Linux). Both take the same two steps as the command form:
+
 ```powershell
 .\PierrotKnowledge2 Uninstall           show the plan
 .\PierrotKnowledge2 Uninstall --apply   carry it out
+```
+
+```bash
+bash UNINSTALL.command                  # show the plan
+bash UNINSTALL.command --apply          # carry it out
 ```
 
 The plan lists what **survives** before it lists what goes, because that is the
@@ -380,3 +402,4 @@ MIT. See [LICENSE](LICENSE).
 | [Benchmark](docs/BENCHMARK.md) | Method and raw data |
 | [Conformance](docs/CONFORMANCE.md) | OKF audit, clause by clause |
 | [Architecture](docs/ARCHITECTURE.md) | How the code fits together |
+ the code fits together |
