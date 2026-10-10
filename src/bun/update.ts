@@ -25,7 +25,7 @@
 
 import { createHash } from "crypto";
 import { chmod, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "fs/promises";
-import { join, resolve } from "path";
+import { dirname, join, resolve } from "path";
 import {
   checkSafeToUpdate,
   decideUpdate,
@@ -75,6 +75,11 @@ export const REPLACED_PATHS = [
   "UNINSTALL.command",
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
+  // Entry by entry, not `rust/`: rust/target is a developer's cargo cache,
+  // gigabytes that no release owns and an update must not move.
+  "rust/Cargo.toml",
+  "rust/Cargo.lock",
+  "rust/src",
 ] as const;
 
 /**
@@ -448,10 +453,13 @@ export async function applyUpdate(options: {
 
       const current = join(options.installDir, name);
       if (await exists(current)) {
+        // A nested entry (rust/src) needs its parent in the backup too.
+        await mkdir(dirname(join(backupDir, name)), { recursive: true });
         await rename(current, join(backupDir, name));
         done.push({ name, from: current });
       }
 
+      await mkdir(dirname(current), { recursive: true });
       await cp(incoming, current, { recursive: true });
       created.push(current);
       replaced.push(name);
@@ -482,10 +490,20 @@ export async function rollback(installDir: string, backupDir: string): Promise<s
   const restored: string[] = [];
 
   for (const name of await readdir(backupDir)) {
-    const target = join(installDir, name);
-    await rm(target, { recursive: true, force: true }).catch(() => {});
-    await rename(join(backupDir, name), target);
-    restored.push(name);
+    // `rust` in the backup holds only rust/src and the manifests. Restoring
+    // the folder whole would delete rust/target, which no update touched.
+    const nested = REPLACED_PATHS.filter((path) => path.startsWith(`${name}/`));
+    const entries = nested.length ? nested : [name];
+
+    for (const entry of entries) {
+      const from = join(backupDir, entry);
+      if (!(await exists(from))) continue;
+      const target = join(installDir, entry);
+      await rm(target, { recursive: true, force: true }).catch(() => {});
+      await mkdir(dirname(target), { recursive: true });
+      await rename(from, target);
+      restored.push(entry);
+    }
   }
 
   return restored;

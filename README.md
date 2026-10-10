@@ -20,13 +20,13 @@ there is one write path, so a human edit and an agent edit cannot disagree.
 | | What it is | Who runs it | Resident memory |
 |---|---|---|---|
 | **`ui`** | The full interface, served to a browser you already have open | **you** | **135 MB** |
-| **Headless** | MCP server over stdio, no interface at all | **an agent** | **85 MB** |
-| **CLI** | One command, one answer, exits | either | — (0.28 s per run) |
+| **Headless** | MCP server over stdio, no interface at all | **an agent** | **8 MB** (Rust; 85 MB as the Bun build) |
+| **CLI** | One command, one answer, exits | either | — (0.04 s per run; 0.19 s as the Bun build) |
 
 **Agents run headless. Always.** An agent host — Claude Code, Codex, opencode,
 Hermes — spawns `build/headless/okf-mcp.exe` itself and talks to it over stdio.
 It is one process with no page attached, which is where the difference between
-85 MB and 135 MB comes from. Never point an agent at `ui` mode: that interface
+8 MB and 135 MB comes from. Never point an agent at `ui` mode: that interface
 speaks RPC to a browser, not MCP, and there is nothing there for an agent to
 call.
 
@@ -75,8 +75,15 @@ measure, and the figure in earlier revisions of this table was the headless
 executable's size mislabelled.
 
 Headless is a separate shape again: `bun run build:headless` produces one
-self-contained **94 MB** executable — no `node_modules`, no Bun on `PATH` —
-and that is all an agent host needs.
+self-contained executable — no `node_modules`, no Bun on `PATH` — and that is
+all an agent host needs. With a Rust toolchain (`cargo`) on `PATH` it builds
+the Rust port in `rust/`: **7 MB**, about **8 MB resident**, first answer in
+**33 ms**. Without one, Bun compiles the TypeScript into a 94 MB executable
+that answers identically — `test/rust-parity.test.ts` sends the same 186 MCP
+calls to both and requires byte-identical replies. `bun run build:cli` does the
+same for the CLI (`build/cli/okf`, 9 MB), which the `PierrotKnowledge2`
+launcher prefers; its `ui` command hands off to Bun, because the interface is
+still TypeScript. `OKF_BUILD=bun` forces the Bun build.
 
 **The desktop build was not light and never became light.** At 633 MB it was
 heavier than Obsidian. The premise this project began with — that the system

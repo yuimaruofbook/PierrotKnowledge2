@@ -224,6 +224,49 @@ describe("applying and undoing", () => {
     await removeTempDir(staged);
   });
 
+  test("the Rust sources are replaced, and a developer's rust/target survives", async () => {
+    // An install from before the port has no rust/ at all; one from after it
+    // may hold gigabytes of cargo cache in rust/target that no release owns.
+    await mkdir(join(install, "rust", "src"), { recursive: true });
+    await mkdir(join(install, "rust", "target"), { recursive: true });
+    await writeFile(join(install, "rust", "src", "lib.rs"), "old", "utf8");
+    await writeFile(join(install, "rust", "target", "cache"), "keep", "utf8");
+    await mkdir(join(staged, "rust", "src"), { recursive: true });
+    await writeFile(join(staged, "rust", "src", "lib.rs"), "new", "utf8");
+    await writeFile(join(staged, "rust", "Cargo.toml"), "[package]", "utf8");
+
+    const result = await applyUpdate({ installDir: install, stagedRoot: staged });
+
+    expect(await readFile(join(install, "rust", "src", "lib.rs"), "utf8")).toBe("new");
+    expect(await readFile(join(install, "rust", "Cargo.toml"), "utf8")).toBe("[package]");
+    expect(await readFile(join(install, "rust", "target", "cache"), "utf8")).toBe("keep");
+    expect(await readFile(join(result.backupDir, "rust", "src", "lib.rs"), "utf8")).toBe("old");
+  });
+
+  test("rolling back restores the Rust sources and still leaves rust/target alone", async () => {
+    await mkdir(join(install, "rust", "src"), { recursive: true });
+    await mkdir(join(install, "rust", "target"), { recursive: true });
+    await writeFile(join(install, "rust", "src", "lib.rs"), "old", "utf8");
+    await writeFile(join(install, "rust", "target", "cache"), "keep", "utf8");
+    await mkdir(join(staged, "rust", "src"), { recursive: true });
+    await writeFile(join(staged, "rust", "src", "lib.rs"), "new", "utf8");
+
+    const result = await applyUpdate({ installDir: install, stagedRoot: staged });
+    await rollback(install, result.backupDir);
+
+    expect(await readFile(join(install, "rust", "src", "lib.rs"), "utf8")).toBe("old");
+    expect(await readFile(join(install, "rust", "target", "cache"), "utf8")).toBe("keep");
+  });
+
+  test("Rust sources arrive in an install that never had rust/", async () => {
+    await mkdir(join(staged, "rust", "src"), { recursive: true });
+    await writeFile(join(staged, "rust", "src", "lib.rs"), "new", "utf8");
+
+    await applyUpdate({ installDir: install, stagedRoot: staged });
+
+    expect(await readFile(join(install, "rust", "src", "lib.rs"), "utf8")).toBe("new");
+  });
+
   test("the new tree lands and the old one is kept, not deleted", async () => {
     const result = await applyUpdate({ installDir: install, stagedRoot: staged });
 

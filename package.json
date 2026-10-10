@@ -1,6 +1,6 @@
 {
   "name": "okf-wiki",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Ultra-lightweight OKF v0.2 knowledge base following the LLM Wiki pattern. Bun + Vite + TypeScript, served to your own browser.",
   "license": "MIT",
   "type": "module",
@@ -24,7 +24,7 @@
     "bench:workload": "bun run scripts/bench/workload.ts",
     "okf": "bun run src/bun/cli/main.ts",
     "release": "bun run scripts/release.ts",
-    "build:cli": "bun build --compile --minify --outfile build/cli/okf src/bun/cli/main.ts"
+    "build:cli": "bun run scripts/build-headless.ts cli"
   },
   "dependencies": {
     "@types/turndown": "^5.0.6",

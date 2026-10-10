@@ -1,0 +1,32 @@
+[package]
+name = "okf"
+version = "0.1.0"
+edition = "2021"
+description = "Rust port of the okf-wiki shared layer (OKF v0.2 helpers)"
+license = "MIT"
+
+[lib]
+name = "okf"
+path = "src/lib.rs"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock"] }
+ctrlc = { version = "3.5.2", features = ["termination"] }
+fancy-regex = "0.19.2"
+flate2 = "1.1.10"
+icu_collator = "2.3.1"
+icu_locale = "2.3.1"
+icu_normalizer = "2.3.0"
+indexmap = { version = "2.14.2", features = ["serde"] }
+notify = "8.2.0"
+regex = "1.13.1"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.151", features = ["float_roundtrip", "preserve_order"] }
+sha2 = "0.11.0"
+sys-locale = "0.3.2"
+ureq = "3.4.2"
+yaml-rust2 = "0.13.0"
+
+[dev-dependencies]
+tempfile = "3.27.0"

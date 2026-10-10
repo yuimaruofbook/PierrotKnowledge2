@@ -52,6 +52,12 @@ const INCLUDE = [
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
   ".gitignore",
+  // The Rust port's sources, entry by entry rather than `rust/`: an update
+  // replaces each listed entry wholesale, and `rust/target` is gigabytes of a
+  // developer's build cache, not something a release owns.
+  "rust/Cargo.toml",
+  "rust/Cargo.lock",
+  "rust/src",
 ];
 
 const args = process.argv.slice(2);

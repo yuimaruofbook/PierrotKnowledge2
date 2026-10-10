@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.7.0
+
+### The headless server and the CLI, in Rust
+
+`rust/` is a port of everything an agent or a terminal talks to — the 41 MCP
+tools, the stdio server, the CLI, the bundle, YAML, FTS5 search, retrieval,
+context packs, connecting, updating and uninstalling. The browser interface is
+still TypeScript.
+
+| | Rust | Bun |
+|---|---|---|
+| `okf-mcp` executable | 7.2 MB | 94 MB |
+| First reply after start | 33 ms | 145 ms |
+| Resident while idle | 7.7 MB | 89.6 MB |
+| CLI `info` / `search` | 33–84 ms | 180–198 ms |
+
+It is a port, not a rewrite: the same calls get the same bytes back.
+`test/rust-parity.test.ts` sends 186 MCP calls — every tool, every error path,
+malformed JSON-RPC, external edits picked up by the watcher — to both servers
+on two copies of one bundle, and `test/rust-cli-parity.test.ts` runs about 210
+command lines through both CLIs, comparing stdout, stderr and exit code. Only
+the bundle path and clocks are masked. Getting there meant reproducing JS where
+it shows: UTF-16 lengths for snippets and chunk offsets, JS number printing,
+key order in JSON, ICU collation in the host's locale (Japanese names sort as
+Bun sorts them), npm `yaml`'s output, Node's path resolution and error text,
+and even SQLite's bm25 computed with fused multiply-add, as Bun's SQLite is.
+
+What it cannot reproduce: a snippet cut through an emoji or 𠮷 ends in U+FFFD
+where JS leaves a lone surrogate, and a few YAML forms this app never writes
+(tab indentation, complex keys, anchors) read differently.
+
+`bun run build:headless` and `bun run build:cli` build the Rust binaries when
+`cargo` is on `PATH`, into the same paths as before, and fall back to Bun
+otherwise — so setup needs nothing new. A failed Rust build leaves the working
+binary in place.
+
+### The Rust build reaches machines without Rust
+
+Each release now carries `okf-mcp` and `okf` for Windows x64, macOS arm64 and
+x64, and Linux x64, built by `.github/workflows/native.yml`, which also runs the
+crate's tests on all three systems on every change to `rust/`. Without `cargo`,
+setup downloads the binary for its platform and version and installs it only
+if it matches the SHA-256 GitHub recorded for it; anything else — another
+platform, no network, a mismatch — falls back to the Bun build, as before.
+
+Updating now carries the Rust sources too (`rust/Cargo.toml`, `rust/Cargo.lock`,
+`rust/src`), entry by entry, so a developer's `rust/target` is never moved.
+
 ## 0.6.0
 
 ### Strata and Unsloth Desktop
