@@ -40,6 +40,10 @@ pub fn should_ignore(rel_path: &str) -> bool {
 
 pub struct BundleWatcher {
     root: PathBuf,
+    /// The root with symlinks resolved. FSEvents reports real paths, so a
+    /// bundle under a symlinked folder — every macOS temp dir, /var → /private/var
+    /// — would otherwise have each event fall outside `root` and be dropped.
+    real_root: Option<PathBuf>,
     debounce: Duration,
     on_error: Rc<dyn Fn(&str)>,
     watcher: Option<RecommendedWatcher>,
@@ -54,6 +58,13 @@ impl BundleWatcher {
     pub fn new(root: &str, debounce: Option<Duration>, on_error: Rc<dyn Fn(&str)>) -> Self {
         Self {
             root: PathBuf::from(root),
+            // Not on Windows: canonicalize returns a `\\?\` verbatim path there,
+            // which events never use, and the case-insensitive match covers it.
+            real_root: if cfg!(windows) {
+                None
+            } else {
+                std::fs::canonicalize(root).ok().filter(|real| real.as_path() != Path::new(root))
+            },
             debounce: debounce.unwrap_or(DEFAULT_DEBOUNCE),
             on_error,
             watcher: None,
@@ -85,7 +96,8 @@ impl BundleWatcher {
 
     /// Bundle-relative `/`-separated path of an event path, if it is inside the root.
     fn relative(&self, path: &Path) -> Option<String> {
-        let rel = match path.strip_prefix(&self.root) {
+        let real = self.real_root.as_deref().and_then(|real| path.strip_prefix(real).ok());
+        let rel = match path.strip_prefix(&self.root).ok().or(real).ok_or(()) {
             Ok(rel) => rel.to_path_buf(),
             Err(_) => {
                 // Windows paths compare case-insensitively.
@@ -188,6 +200,29 @@ mod tests {
         assert!(w.start());
         std::fs::write(dir.path().join("a.md"), "x").unwrap();
         std::fs::write(dir.path().join("b.tmp"), "x").unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = Vec::new();
+        while Instant::now() < deadline && seen.is_empty() {
+            std::thread::sleep(Duration::from_millis(30));
+            seen = w.poll();
+        }
+        assert_eq!(seen, vec!["a.md".to_string()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bundle_opened_through_a_symlink_still_sees_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let root = link.to_string_lossy().into_owned();
+        let mut w = BundleWatcher::new(&root, Some(Duration::from_millis(50)), Rc::new(|_| {}));
+        assert!(w.start());
+        std::fs::write(real.join("a.md"), "x").unwrap();
 
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut seen = Vec::new();

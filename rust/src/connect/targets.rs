@@ -1453,9 +1453,14 @@ mod tests {
         assert_eq!(find_install_root(Some(&[&start])), Some(nodepath::resolve1(&root)));
     }
 
+    /// Bun's virtual root: `B:/~BUN/root` on Windows, `/$bunfs/root` elsewhere.
+    /// The Windows spelling is a *relative* path on POSIX, which resolves into
+    /// the working directory — this repository — and is found there.
+    const VIRTUAL_ROOT: &str = if cfg!(windows) { "B:/~BUN/root/okf-wiki" } else { "/$bunfs/root/okf-wiki" };
+
     #[test]
     fn returns_none_for_a_virtual_root_rather_than_inventing_a_path() {
-        assert_eq!(find_install_root(Some(&["B:/~BUN/root/okf-wiki"])), None);
+        assert_eq!(find_install_root(Some(&[VIRTUAL_ROOT])), None);
     }
 
     #[test]
@@ -1466,7 +1471,7 @@ mod tests {
         fs::write(mcp.join("standalone.ts"), "").unwrap();
         let root = path_of(&dir);
         assert_eq!(
-            find_install_root(Some(&["B:/~BUN/root/okf-wiki", &root])),
+            find_install_root(Some(&[VIRTUAL_ROOT, &root])),
             Some(nodepath::resolve1(&root))
         );
     }
