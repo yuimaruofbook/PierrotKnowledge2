@@ -40,6 +40,8 @@ export interface ConnectTargetStatus {
   endpoint?: string;
   /** Present when the host is configured by its own CLI rather than by us. */
   setupCommand?: string;
+  /** `setupCommand` is a snippet to paste rather than a command to run. */
+  setupIsSnippet?: boolean;
   connected: boolean;
 }
 
@@ -95,7 +97,7 @@ const SECTION_TITLES: Record<ConnectionsSection, string> = {
 const BULK_STATUS: Record<BulkConnectStatus, { text: string; badge: string }> = {
   connected: { text: "登録しました", badge: "ok" },
   unchanged: { text: "変更なし（登録済み）", badge: "ok" },
-  manual: { text: "コマンドの実行が必要", badge: "warn" },
+  manual: { text: "手動の作業が必要", badge: "warn" },
   skipped: { text: "未検出のためスキップ", badge: "" },
   failed: { text: "失敗", badge: "bad" },
 };
@@ -114,6 +116,8 @@ export class ConnectionsPanel {
   private bulkIncludeMissing = false;
   /** Set by "このモデルで実行" so the run controls open on that server. */
   private preferredServer: string | null = null;
+  /** Whether the folded "未検出" groups are open, kept across re-renders. */
+  private showMissing = false;
 
   /**
    * One container per section, created once.
@@ -500,7 +504,7 @@ export class ConnectionsPanel {
         text: "設定ファイルに 1 項目だけ追記します。既存の設定は変更せず、上書き前に必ずバックアップを取ります。",
       })
     );
-    for (const target of hosts) body.appendChild(this.targetRow(target));
+    this.appendGrouped(body, hosts);
 
     body.appendChild(el("div", { className: "panel-head", text: "ローカルモデルサーバー" }));
     body.appendChild(
@@ -509,7 +513,36 @@ export class ConnectionsPanel {
         text: "これらは MCP クライアントではありません。本アプリ内蔵のエージェントから使います（「ローカル実行」タブ）。",
       })
     );
-    for (const target of servers) body.appendChild(this.targetRow(target));
+    this.appendGrouped(body, servers);
+  }
+
+  /**
+   * Rows for tools that are here first, the rest folded away.
+   *
+   * Eighteen rows with most of them "未検出" buried the three that could
+   * actually be used. A tool already configured stays in view even when its
+   * CLI is not on PATH, since that is usually Cursor on Windows, not absence.
+   */
+  private appendGrouped(body: HTMLElement, targets: readonly ConnectTargetStatus[]): void {
+    const present = targets.filter((t) => t.installed || t.connected);
+    const missing = targets.filter((t) => !t.installed && !t.connected);
+
+    for (const target of present) body.appendChild(this.targetRow(target));
+    if (!present.length) {
+      body.appendChild(
+        el("p", { className: "conn-desc", text: "このマシンでは見つかりませんでした。" })
+      );
+    }
+    if (!missing.length) return;
+
+    const fold = el("details", { className: "conn-missing" });
+    fold.open = this.showMissing;
+    fold.addEventListener("toggle", () => {
+      this.showMissing = fold.open;
+    });
+    fold.appendChild(el("summary", { text: `未検出のツール（${missing.length}）` }));
+    for (const target of missing) fold.appendChild(this.targetRow(target));
+    body.appendChild(fold);
   }
 
   /**
@@ -593,7 +626,11 @@ export class ConnectionsPanel {
       // otherwise "コマンドの実行が必要" is a dead end.
       if (outcome.command) {
         const how = el("div", { className: "update-how" });
-        how.appendChild(el("div", { text: "次のコマンドを実行してください:" }));
+        how.appendChild(
+          el("div", {
+            text: outcome.snippet ? "次の JSON を貼り付けてください:" : "次のコマンドを実行してください:",
+          })
+        );
         how.appendChild(el("code", { text: outcome.command }));
         row.appendChild(how);
       } else {
@@ -635,7 +672,7 @@ export class ConnectionsPanel {
         [
           `${done} 件のエージェントに登録しました`,
           ...(failed ? [`失敗 ${failed} 件`] : []),
-          ...(manual ? [`手動コマンド ${manual} 件`] : []),
+          ...(manual ? [`手動の作業 ${manual} 件`] : []),
         ].join(" · ")
       );
     } catch (error) {
@@ -682,7 +719,12 @@ export class ConnectionsPanel {
     // instead of a button that would edit a file we should not touch.
     if (target.setupCommand) {
       const how = el("div", { className: "update-how" });
-      how.appendChild(el("div", { text: "次のコマンドを実行してください:" }));
+      // Unsloth's is an mcpServers snippet for its import, not a command.
+      how.appendChild(
+        el("div", {
+          text: target.setupIsSnippet ? "次の JSON を貼り付けてください:" : "次のコマンドを実行してください:",
+        })
+      );
       how.appendChild(el("code", { text: target.setupCommand }));
       row.appendChild(how);
       return row;
@@ -751,6 +793,13 @@ export class ConnectionsPanel {
     clear(body);
 
     const servers = this.targets.filter((t) => t.kind === "model-server");
+    // Start on a server that is actually here. Defaulting to the first in the
+    // list meant opening the panel probed Ollama on a machine without it and
+    // put a connection error in the status bar before anything was pressed.
+    const initial =
+      servers.find((s) => s.id === this.preferredServer) ??
+      servers.find((s) => s.installed) ??
+      servers[0];
 
     const controls = el("div", { className: "conn-form" });
 
@@ -760,8 +809,8 @@ export class ConnectionsPanel {
     for (const server of servers) {
       const option = document.createElement("option");
       option.value = server.id;
-      option.textContent = `${server.label} — ${server.endpoint ?? ""}`;
-      if (server.id === this.preferredServer) option.selected = true;
+      option.textContent = `${server.label} — ${server.endpoint ?? ""}${server.installed ? "" : "（未検出）"}`;
+      if (server.id === initial?.id) option.selected = true;
       serverSelect.appendChild(option);
     }
     serverRow.appendChild(serverSelect);
@@ -773,24 +822,11 @@ export class ConnectionsPanel {
     modelRow.appendChild(modelSelect);
     controls.appendChild(modelRow);
 
-    const loadModels = async () => {
-      clear(modelSelect);
-      try {
-        for (const model of await this.ui.listLocalModels(serverSelect.value)) {
-          const option = document.createElement("option");
-          option.value = model;
-          option.textContent = model;
-          modelSelect.appendChild(option);
-        }
-      } catch (error) {
-        const option = document.createElement("option");
-        option.textContent = "（サーバーに接続できません）";
-        modelSelect.appendChild(option);
-        this.ui.onError(error);
-      }
-    };
-    serverSelect.addEventListener("change", () => void loadModels());
-    void loadModels();
+    // Why there are no models, and what to do — inline, beside the control it
+    // explains. A server that is not running is the normal state here, not an
+    // error worth the status bar.
+    const status = el("div", { className: "conn-status" });
+    controls.appendChild(status);
 
     const taskRow = el("label", { className: "conn-field" });
     taskRow.appendChild(el("span", { className: "conn-field-name", text: "依頼" }));
@@ -807,10 +843,82 @@ export class ConnectionsPanel {
       text: this.running ? "実行中…" : "実行",
     });
     run.type = "button";
-    (run as HTMLButtonElement).disabled = this.running;
+    run.disabled = true;
     run.addEventListener("click", () => {
       void this.runAgent(serverSelect.value, modelSelect.value, taskInput.value);
     });
+
+    const canRun = () => !this.running && modelSelect.value !== "" && taskInput.value.trim() !== "";
+    taskInput.addEventListener("input", () => {
+      run.disabled = !canRun();
+    });
+    taskInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.isComposing && canRun()) run.click();
+    });
+
+    // Only the latest request may fill the form. Switching servers while an
+    // earlier one is still timing out otherwise lands its models, or its
+    // error, under the server now selected.
+    let generation = 0;
+    const loadModels = async () => {
+      const mine = ++generation;
+      const server = servers.find((s) => s.id === serverSelect.value);
+      clear(modelSelect);
+      clear(status);
+      status.className = "conn-status";
+      status.textContent = "モデル一覧を取得しています…";
+      modelSelect.disabled = true;
+      run.disabled = true;
+
+      try {
+        const models = await this.ui.listLocalModels(serverSelect.value);
+        if (mine !== generation) return;
+        for (const model of models) {
+          const option = document.createElement("option");
+          option.value = model;
+          option.textContent = model;
+          modelSelect.appendChild(option);
+        }
+        modelSelect.disabled = models.length === 0;
+        clear(status);
+        if (!models.length) {
+          status.className = "conn-status warn";
+          status.textContent = `${server?.label ?? "サーバー"} は起動していますが、読み込まれたモデルがありません。`;
+        }
+      } catch (error) {
+        if (mine !== generation) return;
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "（未起動）";
+        modelSelect.appendChild(option);
+        clear(status);
+        status.className = "conn-status warn";
+        status.appendChild(
+          el("div", {
+            text: `${server?.label ?? "サーバー"} に接続できません。起動してから再試行してください。`,
+          })
+        );
+        if (server?.note) status.appendChild(el("div", { className: "conn-desc", text: server.note }));
+        // The raw reason, for the cases the note does not cover (a 401 from a
+        // missing key, a changed port).
+        status.appendChild(
+          el("div", {
+            className: "conn-command",
+            text: error instanceof Error ? error.message : String(error),
+          })
+        );
+        const retry = el("button", { className: "btn", text: "再試行" });
+        retry.type = "button";
+        retry.addEventListener("click", () => void loadModels());
+        status.appendChild(retry);
+      }
+      run.disabled = !canRun();
+    };
+    serverSelect.addEventListener("change", () => {
+      this.preferredServer = serverSelect.value;
+      void loadModels();
+    });
+    void loadModels();
 
     const actions = el("div", { className: "conn-actions" });
     actions.appendChild(run);

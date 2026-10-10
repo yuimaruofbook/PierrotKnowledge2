@@ -5,14 +5,12 @@
  * and a virtual DOM would cost more bytes than the entire view layer.
  */
 
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
+/**
+ * Re-exported so view code keeps importing its helpers from one place. The
+ * implementation is shared with the capture side, which writes the same escapes
+ * into a provenance header outside any DOM.
+ */
+export { escapeHtml } from "../shared/html";
 
 /** Query a required element, failing loudly instead of at first use. */
 export function must<T extends HTMLElement>(id: string): T {

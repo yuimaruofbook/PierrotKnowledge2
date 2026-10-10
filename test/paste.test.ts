@@ -10,8 +10,11 @@
 import { describe, expect, test } from "bun:test";
 import { decidePaste, looksLikeMarkdown } from "../src/shared/paste";
 
-/** The DOM-backed converter is verified in the browser; here it is a stub. */
-const convert = (html: string) => html.replace(/<[^>]+>/g, "").trim();
+/** The DOM-backed converters are verified in the browser; here they are stubs. */
+const convert = {
+  markdown: (html: string) => html.replace(/<[^>]+>/g, "").trim(),
+  html: (html: string) => html.replace(/<meta[^>]*>/gi, "").trim(),
+};
 
 describe("looksLikeMarkdown", () => {
   test("recognises the syntax people actually copy", () => {
@@ -39,8 +42,9 @@ describe("looksLikeMarkdown", () => {
 describe("decidePaste", () => {
   test("uses plain text when there is no HTML flavour", () => {
     expect(decidePaste({ html: null, text: "そのまま" }, convert)).toEqual({
-      markdown: "そのまま",
+      content: "そのまま",
       from: "text",
+      format: "markdown",
     });
   });
 
@@ -49,8 +53,8 @@ describe("decidePaste", () => {
   });
 
   test("Ctrl+Shift+V forces plain text even when HTML is richer", () => {
-    const decision = decidePaste({ html: "<h1>見出し</h1>", text: "見出し" }, convert, true);
-    expect(decision).toEqual({ markdown: "見出し", from: "text" });
+    const decision = decidePaste({ html: "<h1>見出し</h1>", text: "見出し" }, convert, "plain");
+    expect(decision).toEqual({ content: "見出し", from: "text", format: "markdown" });
   });
 
   test("Markdown source copied from another editor is taken verbatim", () => {
@@ -62,10 +66,48 @@ describe("decidePaste", () => {
     };
     const decision = decidePaste(source, convert);
     expect(decision.from).toBe("text");
-    expect(decision.markdown).toBe(source.text);
+    expect(decision.content).toBe(source.text);
   });
 
   test("an empty clipboard yields nothing to insert", () => {
-    expect(decidePaste({ html: null, text: "" }, convert).markdown).toBe("");
+    expect(decidePaste({ html: null, text: "" }, convert).content).toBe("");
+  });
+});
+
+describe("pasting as HTML", () => {
+  const source = {
+    html: '<meta charset="utf-8"><h1>見出し</h1><p>本文</p>',
+    text: "見出し\n本文",
+  };
+
+  test("keeps the markup instead of converting it", () => {
+    const decision = decidePaste(source, convert, "html");
+    expect(decision).toEqual({
+      content: "<h1>見出し</h1><p>本文</p>",
+      from: "html",
+      format: "html",
+    });
+  });
+
+  test("Markdown-looking plain text does not win in this mode", () => {
+    // The heuristic exists to guess; asking for HTML explicitly is not a guess.
+    const decision = decidePaste(
+      { html: "<h1>見出し</h1><p>本文</p>", text: "## 見出し" },
+      convert,
+      "html"
+    );
+    expect(decision.format).toBe("html");
+  });
+
+  test("falls back to plain text when the clipboard has no HTML", () => {
+    // Nothing to keep: inserting the plain flavour into an HTML file is still
+    // better than inserting nothing.
+    const decision = decidePaste({ html: null, text: "ただの文字列" }, convert, "html");
+    expect(decision).toEqual({ content: "ただの文字列", from: "text", format: "markdown" });
+  });
+
+  test("clipboard HTML that cleans away to nothing falls back too", () => {
+    const decision = decidePaste({ html: '<meta charset="utf-8">', text: "本文" }, convert, "html");
+    expect(decision).toEqual({ content: "本文", from: "text", format: "markdown" });
   });
 });

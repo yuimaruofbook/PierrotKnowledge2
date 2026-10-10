@@ -43,7 +43,6 @@ export const messages = {
   // ---- path containment and the layer contract ----
 
   pathEscapesBundle: (path: string) => `バンドルの外を指すパスです: ${path}`,
-  rawImmutable: "raw/ は人間が原本を置く場所です。エージェントは書き込めません",
   ragDerived: ".rag/ は派生インデックスです。再構築すると失われます",
   layerViolation: (reason: string, path: string) => `${reason}: ${path}`,
 
@@ -53,6 +52,9 @@ export const messages = {
   alreadyExists: (path: string) => `既に存在します: ${path}`,
   reservedCannotDelete: (path: string) =>
     `${path} は予約ファイル（index.md / log.md）のため削除できません`,
+  layerRootCannotDelete: (path: string) =>
+    `${path} は層のルートのため削除できません。中身を個別に選んでください`,
+  promoteOnlyFromRaw: (path: string) => `raw/ の中のファイルだけが引き上げの対象です: ${path}`,
 
   // ---- OKF conformance (§11) ----
 
@@ -61,6 +63,13 @@ export const messages = {
   reservedHasFrontmatter: "予約ファイル（index.md / log.md）に frontmatter は置けません",
   rootIndexExtraKeys: (keys: string[]) =>
     `ルートの index.md に置けるのは 'okf_version' のみです。検出: ${keys.join(", ")}`,
+
+  // ---- provenance ----
+
+  missingProvenance:
+    "frontmatter に generated がありません。エージェントの書き込みには由来" +
+    "（generated.by / generated.at）を記録してください",
+  auditNoChanges: "該当する変更はありません。",
 
   // ---- non-text files ----
 
@@ -84,17 +93,27 @@ export const messages = {
   mcpExited: (code: number, diagnostics: string) =>
     `MCP サーバーが終了しました (code ${code})` + (diagnostics ? `\n${diagnostics}` : ""),
   mcpUnknownServer: (id: string) => `未登録の MCP サーバーです: ${id}`,
-  mcpNoText: "取り込める本文がありませんでした",
 
   // ---- importing sources ----
 
   importedTo: (path: string) => `raw/ に取り込みました: ${path}`,
+  capturedFiles: (paths: string[]) =>
+    paths.length === 1
+      ? `raw/ に取り込みました: ${paths[0]}`
+      : `${paths.length} 件を raw/ に取り込みました`,
+  captureTooLarge: (name: string, limit: number) =>
+    `${name} は大きすぎます（上限 ${Math.round(limit / (1024 * 1024))} MB）`,
+  captureNotText: (name: string) =>
+    `${name} はテキストではないため取り込めません（raw/ に直接置いてください）`,
+  captureNothing: "取り込めるテキストファイルがありませんでした",
   importOutsideRaw: (path: string) => `取り込み先は raw/ の中でなければなりません: ${path}`,
   importEmpty: "取り込める本文がありませんでした",
 
   // ---- paste ----
 
-  pastedAsMarkdown: "書式を Markdown に変換して貼り付けました（Ctrl+Shift+V で書式なし）",
+  pastedAsMarkdown:
+    "書式を Markdown に変換して貼り付けました（Ctrl+Shift+V で書式なし / Ctrl+Alt+V で HTML のまま）",
+  pastedAsHtml: "HTML のまま貼り付けました（Ctrl+Shift+V で書式なし）",
 
   // ---- layer movement ----
 
@@ -161,6 +180,19 @@ export const messages = {
   connectBackedUp: (path: string) => `既存の設定を退避しました: ${path}`,
   connectUnknownTarget: (id: string) => `未対応の接続先です: ${id}`,
   connectNotInstalled: (label: string) => `${label} が見つかりません`,
+  /**
+   * Refusing to rewrite a config we could not read.
+   *
+   * Named as a refusal, not a failure: the file is intact, and the fix is a
+   * two-minute edit. Overwriting it would have cost the user every other MCP
+   * server they had registered.
+   */
+  configUnparseable: (shape: string) =>
+    `${shape} の既存設定を読み取れませんでした。` +
+    `上書きすると他のサーバー設定が失われるため中止しました。` +
+    `書式（コメントや末尾カンマなど）を直してから、もう一度接続してください`,
+  configNotAnObject: (shape: string) =>
+    `${shape} の既存設定が想定の形式（キーと値の対応）ではありません`,
 
   // ---- editor metadata ----
 

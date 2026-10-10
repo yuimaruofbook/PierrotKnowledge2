@@ -10,12 +10,14 @@ import { resolve } from "path";
 import type { OkfRpcSchema } from "../shared/rpc-schema";
 import { messages } from "../shared/messages";
 import { skeletonConcept } from "./okf/parser";
+import { MAX_CAPTURE_BYTES, capturePathFor } from "../shared/okf/capture";
 import type { Connections } from "./connections";
 import { SERVER_PRESETS, registryPath, upsertServer } from "./mcp/registry";
 import { clearSession, loadSession, updateSession } from "./state";
 import { serializeSkill } from "../shared/okf/skill";
 import {
   CONNECT_TARGETS,
+  apiKeyFor,
   connectAllTargets,
   connectTarget,
   findInstallRoot,
@@ -23,6 +25,7 @@ import {
   isInstalled,
   previewTarget,
   serverCommandLine,
+  serverSpecFor,
 } from "./connect/targets";
 import { LocalAgent } from "./agent/loop";
 import { OpenAiCompatClient } from "./agent/openai";
@@ -209,6 +212,37 @@ export function createRequestHandlers(
       }
     },
 
+    /**
+     * Capture dropped files into `raw/`.
+     *
+     * Sizes are checked before anything is written, so a batch containing one
+     * oversized file does not leave half of itself captured. The cap is not
+     * about disk: the content crosses the socket as one JSON message, and a
+     * dropped video would stall the connection the whole UI runs on.
+     */
+    async captureFiles({ files }) {
+      const bundle = workspace.requireBundle();
+
+      for (const file of files) {
+        const bytes = Buffer.byteLength(file.content, "utf8");
+        if (bytes > MAX_CAPTURE_BYTES) {
+          throw new Error(messages.captureTooLarge(file.name, MAX_CAPTURE_BYTES));
+        }
+      }
+
+      const paths: string[] = [];
+      for (const file of files) {
+        const { path } = await bundle.importToRaw(capturePathFor(file.name), file.content, {
+          actor: "human:local",
+          note: "dropped in",
+        });
+        paths.push(path);
+      }
+
+      await workspace.reloadBundle();
+      return { paths };
+    },
+
     openDaily: () => workspace.openDaily(),
 
     createConcept: ({ path, type, title, description, tags, body }) =>
@@ -374,8 +408,10 @@ export function createRequestHandlers(
               ? {
                   setupCommand: target.setupCommand(
                     bundleRoot,
-                    serverCommandLine(PROJECT_ROOT, bundleRoot)
+                    serverCommandLine(PROJECT_ROOT, bundleRoot),
+                    serverSpecFor(PROJECT_ROOT, bundleRoot)
                   ),
+                  ...(target.setupKind === "snippet" ? { setupIsSnippet: true } : {}),
                 }
               : {}),
             // For hosts, "connected" means our entry is already in their file.
@@ -413,14 +449,14 @@ export function createRequestHandlers(
 
     listLocalModels: ({ id }) => {
       const target = findTarget(id);
-      return new OpenAiCompatClient(target.endpoint ?? "", target.label).listModels();
+      return new OpenAiCompatClient(target.endpoint ?? "", target.label, undefined, apiKeyFor(target)).listModels();
     },
 
     runLocalAgent: async ({ id, model, task, maxRounds, tokenBudget }) => {
       const target = findTarget(id);
       const agent = new LocalAgent(
         workspace,
-        new OpenAiCompatClient(target.endpoint ?? "", target.label),
+        new OpenAiCompatClient(target.endpoint ?? "", target.label, undefined, apiKeyFor(target)),
         target.label
       );
       await agent.check(model);

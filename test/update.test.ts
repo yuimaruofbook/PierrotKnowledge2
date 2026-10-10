@@ -7,7 +7,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, open, readFile, stat, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -24,8 +24,10 @@ import {
   applyUpdate,
   digestMatches,
   pickAsset,
+  restoreExecutableBits,
   rollback,
   staleCompiledArtifacts,
+  EXECUTABLE_PATHS,
   REPLACED_PATHS,
 } from "../src/bun/update";
 import { removeTempDir } from "./helpers";
@@ -249,6 +251,93 @@ describe("applying and undoing", () => {
     await applyUpdate({ installDir: install, stagedRoot: staged });
 
     expect(await readFile(join(install, "node_modules", "x", "keep.js"), "utf8")).toBe("keep");
+  });
+
+  test("a failed update leaves behind nothing it created", async () => {
+    // A path the archive *introduces* is the case that used to be missed. One
+    // that already existed is renamed aside first, so the undo removes it on
+    // the way to restoring the backup; a brand-new top-level file has no
+    // backup, never entered the undo list, and stayed behind in an otherwise
+    // rolled-back tree.
+    //
+    // CHANGELOG.md (12) is copied in before LICENSE (13), so failing on LICENSE
+    // leaves the new CHANGELOG.md as the thing to clean up.
+    await writeFile(join(staged, "CHANGELOG.md"), "new changelog", "utf8");
+    await writeFile(join(staged, "LICENSE"), "new licence", "utf8");
+    expect(await readFile(join(install, "CHANGELOG.md"), "utf8").catch(() => null)).toBeNull();
+
+    // A directory with an open handle inside it cannot be renamed on Windows,
+    // which is the same EBUSY these tests already see clearing temp folders.
+    await mkdir(join(install, "LICENSE"), { recursive: true });
+    await writeFile(join(install, "LICENSE", "held.txt"), "held", "utf8");
+    const held = await open(join(install, "LICENSE", "held.txt"), "r");
+
+    try {
+      await expect(applyUpdate({ installDir: install, stagedRoot: staged })).rejects.toThrow();
+    } finally {
+      await held.close();
+    }
+
+    // The file the archive introduced is gone rather than stranded.
+    expect(await readFile(join(install, "CHANGELOG.md"), "utf8").catch(() => null)).toBeNull();
+    // And what was already there is back.
+    expect(await readFile(join(install, "src", "old.ts"), "utf8")).toBe("old");
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "the launcher is executable again after an update",
+    async () => {
+      // The release archive is zipped on Windows and carries no permission
+      // bits, so the launcher arrives 0644 and the user's next
+      // ./PierrotKnowledge2 is "Permission denied" — an update that looks like
+      // it broke the app.
+      await writeFile(join(staged, "PierrotKnowledge2"), "#!/bin/sh\n", { mode: 0o644 });
+
+      await applyUpdate({ installDir: install, stagedRoot: staged });
+
+      const mode = (await stat(join(install, "PierrotKnowledge2"))).mode & 0o777;
+      expect(mode & 0o100).toBe(0o100);
+    }
+  );
+});
+
+describe("restoreExecutableBits", () => {
+  test.skipIf(process.platform === "win32")("adds execute wherever read is set", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "okf-exec-"));
+    try {
+      await writeFile(join(dir, "PierrotKnowledge2"), "#!/bin/sh\n", { mode: 0o644 });
+      await writeFile(join(dir, "SETUP.command"), "#!/bin/sh\n", { mode: 0o600 });
+
+      const restored = await restoreExecutableBits(dir);
+      expect(restored).toContain("PierrotKnowledge2");
+
+      // 0644 → 0755: execute follows read, which is what chmod +x does.
+      expect((await stat(join(dir, "PierrotKnowledge2"))).mode & 0o777).toBe(0o755);
+      // 0600 → 0700: no read for group or other, so no execute either.
+      expect((await stat(join(dir, "SETUP.command"))).mode & 0o777).toBe(0o700);
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  test("a file that is not there is skipped, not an error", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "okf-exec-empty-"));
+    try {
+      expect(await restoreExecutableBits(dir)).toEqual([]);
+    } finally {
+      await removeTempDir(dir);
+    }
+  });
+
+  test("every executable is also shipped and replaced by an update", () => {
+    // Three lists used to say which files must run: this one, the release
+    // archive's, and setup.sh's chmod loop. The first two are now the same
+    // array — this holds down the third relationship, that a file we make
+    // executable is one an update actually replaces.
+    for (const path of EXECUTABLE_PATHS) {
+      const top = path.split("/")[0]!;
+      expect(REPLACED_PATHS as readonly string[]).toContain(top);
+    }
   });
 });
 

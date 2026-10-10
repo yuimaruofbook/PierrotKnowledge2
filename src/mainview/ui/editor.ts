@@ -10,9 +10,11 @@ import type { ReadFileResult } from "../../shared/types";
 import { messages } from "../../shared/messages";
 import { activeFormats, applyFormat, type FormatAction } from "../../shared/markdown-format";
 import { splitFrontmatter } from "../../shared/okf/frontmatter";
+import { isHtmlPath } from "../../shared/html";
 import { clear, debounce, el } from "../dom";
-import { renderMarkdown } from "../markdown";
+import { renderHtml, renderMarkdown } from "../markdown";
 import { decidePasteContent, readClipboard } from "../paste";
+import type { PasteDecision, PasteMode } from "../../shared/paste";
 import {
   completeWikilink,
   continueList,
@@ -53,7 +55,7 @@ export interface EditorOptions {
   /** Called when the caret enters an unresolved `[[link]]` the user may want to create. */
   onCreateMissing: (target: string) => void;
   /** Told how a paste was interpreted, so the status bar can say so. */
-  onPaste?: (from: "html" | "text") => void;
+  onPaste?: (decision: PasteDecision) => void;
   /** Told which block formats apply at the caret, so the toolbar can light up. */
   onSelectionChange?: (active: Set<FormatAction>) => void;
 }
@@ -68,8 +70,8 @@ export class Editor {
   private completionActive = 0;
   private completionContext: { query: string; start: number } | null = null;
   private readonly scheduleAutosave: () => void;
-  /** Set while Ctrl+Shift+V is being handled. */
-  private forcePlainPaste = false;
+  /** Set by Ctrl+Shift+V / Ctrl+Alt+V, for the `paste` event that follows. */
+  private pasteOverride: PasteMode | null = null;
 
   constructor(private readonly options: EditorOptions) {
     this.scheduleAutosave = debounce(() => {
@@ -141,11 +143,11 @@ export class Editor {
 
     const mod = event.metaKey || event.ctrlKey;
 
-    if (mod && event.shiftKey && (event.key === "v" || event.key === "V")) {
+    if (mod && (event.key === "v" || event.key === "V") && (event.shiftKey || event.altKey)) {
       // The browser fires `paste` right after this; the flag tells the handler
-      // to take the plain flavour and is cleared once it has.
-      this.forcePlainPaste = true;
-      setTimeout(() => (this.forcePlainPaste = false), 0);
+      // which flavour was asked for and is cleared once it has been read.
+      this.pasteOverride = event.shiftKey ? "plain" : "html";
+      setTimeout(() => (this.pasteOverride = null), 0);
       return;
     }
 
@@ -179,14 +181,19 @@ export class Editor {
    *
    * Without this the browser inserts `text/plain`, which is the formatting
    * already thrown away — headings, lists, links and tables arrive as flat
-   * prose. Ctrl+Shift+V still pastes plain text, as everywhere else.
+   * prose. Ctrl+Shift+V still pastes plain text, as everywhere else, and
+   * Ctrl+Alt+V keeps the clipboard's HTML instead of converting it.
+   *
+   * Into an HTML file, keeping the HTML is the default: Markdown inserted there
+   * is never rendered as Markdown, so converting would produce a file that
+   * shows `## 見出し` as literal text.
    */
   private onPaste(event: ClipboardEvent): void {
     const source = readClipboard(event.clipboardData);
     if (!source.text && !source.html) return;
 
-    const decision = decidePasteContent(source, this.forcePlainPaste);
-    if (!decision.markdown) return;
+    const decision = decidePasteContent(source, this.pasteOverride ?? this.defaultPasteMode());
+    if (!decision.content) return;
 
     event.preventDefault();
 
@@ -194,13 +201,17 @@ export class Editor {
     this.apply({
       value:
         textarea.value.slice(0, textarea.selectionStart) +
-        decision.markdown +
+        decision.content +
         textarea.value.slice(textarea.selectionEnd),
-      selectionStart: textarea.selectionStart + decision.markdown.length,
-      selectionEnd: textarea.selectionStart + decision.markdown.length,
+      selectionStart: textarea.selectionStart + decision.content.length,
+      selectionEnd: textarea.selectionStart + decision.content.length,
     });
 
-    this.options.onPaste?.(decision.from);
+    this.options.onPaste?.(decision);
+  }
+
+  private defaultPasteMode(): PasteMode {
+    return isHtmlPath(this.current?.path ?? "") ? "html" : "auto";
   }
 
   /** Apply a transform and keep the DOM, dirty flag and preview in step. */
@@ -503,17 +514,27 @@ export class Editor {
   }
 
   /**
-   * Render the body only.
+   * Render the open file, with the renderer its extension calls for.
    *
-   * YAML frontmatter is metadata, not prose — Marked has no idea what it is and
-   * renders it as a run-on paragraph ("type: Note title: … tags: …"), which is
-   * both ugly and misleading. It is already shown properly as badges in the
-   * toolbar.
+   * For Markdown, the body only: YAML frontmatter is metadata, not prose —
+   * Marked has no idea what it is and renders it as a run-on paragraph
+   * ("type: Note title: … tags: …"), which is both ugly and misleading. It is
+   * already shown properly as badges in the toolbar.
+   *
+   * An HTML file is passed through whole. It has no frontmatter to strip, and
+   * `---` inside a captured page is a horizontal rule someone wrote, not a
+   * delimiter — cutting at it would eat the top of the document.
    */
   private renderPreview(): void {
     clear(this.options.preview);
-    const { body } = splitFrontmatter(this.options.textarea.value);
-    this.options.preview.appendChild(renderMarkdown(body));
+    const source = this.options.textarea.value;
+
+    if (isHtmlPath(this.current?.path ?? "")) {
+      this.options.preview.appendChild(renderHtml(source));
+      return;
+    }
+
+    this.options.preview.appendChild(renderMarkdown(splitFrontmatter(source).body));
   }
 
   private renderMeta(result: ReadFileResult): void {

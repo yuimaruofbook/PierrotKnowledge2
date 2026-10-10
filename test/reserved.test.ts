@@ -105,44 +105,44 @@ describe("log.md (OKF §9)", () => {
   });
 
   test("groups entries under ISO 8601 date headings", () => {
-    const log = insertLogEntry("", entry("2026-08-01T10:00:00Z", "a.md"));
+    const log = insertLogEntry("", entry("2026-08-01T12:00:00Z", "a.md"));
     expect(log).toContain("## 2026-08-01");
     expect(logDates(log)).toEqual(["2026-08-01"]);
   });
 
   test("entries are prose bullets with the conventional leading word", () => {
-    expect(formatLogEntry(entry("2026-08-01T00:00:00Z", "a.md"))).toContain("**Update**");
-    expect(formatLogEntry(entry("2026-08-01T00:00:00Z", "a.md", "create"))).toContain(
+    expect(formatLogEntry(entry("2026-08-01T12:00:00Z", "a.md"))).toContain("**Update**");
+    expect(formatLogEntry(entry("2026-08-01T12:00:00Z", "a.md", "create"))).toContain(
       "**Creation**"
     );
-    expect(formatLogEntry(entry("2026-08-01T00:00:00Z", "a.md", "move"))).toContain("**Move**");
-    expect(formatLogEntry(entry("2026-08-01T00:00:00Z", "a.md", "delete"))).toContain(
+    expect(formatLogEntry(entry("2026-08-01T12:00:00Z", "a.md", "move"))).toContain("**Move**");
+    expect(formatLogEntry(entry("2026-08-01T12:00:00Z", "a.md", "delete"))).toContain(
       "**Deletion**"
     );
   });
 
   test("an entry names the path and the actor", () => {
-    const line = formatLogEntry(entry("2026-08-01T00:00:00Z", "wiki/a.md"));
+    const line = formatLogEntry(entry("2026-08-01T12:00:00Z", "wiki/a.md"));
     expect(line).toContain("wiki/a.md");
     expect(line).toContain("human:kn");
   });
 
   test("date sections are newest first", () => {
-    let log = insertLogEntry("", entry("2026-07-30T00:00:00Z", "old.md"));
-    log = insertLogEntry(log, entry("2026-08-01T00:00:00Z", "new.md"));
+    let log = insertLogEntry("", entry("2026-07-30T12:00:00Z", "old.md"));
+    log = insertLogEntry(log, entry("2026-08-01T12:00:00Z", "new.md"));
     expect(logDates(log)).toEqual(["2026-08-01", "2026-07-30"]);
   });
 
   test("a middle date lands between existing sections", () => {
-    let log = insertLogEntry("", entry("2026-07-30T00:00:00Z", "a.md"));
-    log = insertLogEntry(log, entry("2026-08-05T00:00:00Z", "b.md"));
-    log = insertLogEntry(log, entry("2026-08-01T00:00:00Z", "c.md"));
+    let log = insertLogEntry("", entry("2026-07-30T12:00:00Z", "a.md"));
+    log = insertLogEntry(log, entry("2026-08-05T12:00:00Z", "b.md"));
+    log = insertLogEntry(log, entry("2026-08-01T12:00:00Z", "c.md"));
     expect(logDates(log)).toEqual(["2026-08-05", "2026-08-01", "2026-07-30"]);
   });
 
   test("within a day, the newest entry comes first", () => {
-    let log = insertLogEntry("", entry("2026-08-01T01:00:00Z", "first.md"));
-    log = insertLogEntry(log, entry("2026-08-01T02:00:00Z", "second.md"));
+    let log = insertLogEntry("", entry("2026-08-01T12:00:00Z", "first.md"));
+    log = insertLogEntry(log, entry("2026-08-01T12:00:00Z", "second.md"));
 
     const bullets = log.split("\n").filter((line) => line.startsWith("* "));
     expect(bullets[0]).toContain("second.md");
@@ -151,24 +151,24 @@ describe("log.md (OKF §9)", () => {
   });
 
   test("the title is never duplicated", () => {
-    let log = insertLogEntry("", entry("2026-08-01T00:00:00Z", "a.md"));
-    log = insertLogEntry(log, entry("2026-08-02T00:00:00Z", "b.md"));
+    let log = insertLogEntry("", entry("2026-08-01T12:00:00Z", "a.md"));
+    log = insertLogEntry(log, entry("2026-08-02T12:00:00Z", "b.md"));
     expect(log.match(/^# /gm)).toHaveLength(1);
   });
 
   test("starting from an existing empty log keeps one title", () => {
-    const log = insertLogEntry(emptyLogMd(), entry("2026-08-01T00:00:00Z", "a.md"));
+    const log = insertLogEntry(emptyLogMd(), entry("2026-08-01T12:00:00Z", "a.md"));
     expect(log.match(/^# /gm)).toHaveLength(1);
     expect(log).toContain("## 2026-08-01");
   });
 
   test("a log with entries stays conformant", () => {
-    const log = insertLogEntry("", entry("2026-08-01T00:00:00Z", "a.md"));
+    const log = insertLogEntry("", entry("2026-08-01T12:00:00Z", "a.md"));
     expect(checkConformance("log.md", log).ok).toBe(true);
   });
 
   test("isoDate reduces a timestamp to the date heading form", () => {
-    expect(isoDate("2026-08-01T23:59:59Z")).toBe("2026-08-01");
-    expect(isoDate(new Date("2026-01-02T00:00:00Z"))).toBe("2026-01-02");
+    expect(isoDate("2026-08-01T12:00:00Z")).toBe("2026-08-01");
+    expect(isoDate(new Date("2026-01-02T12:00:00Z"))).toBe("2026-01-02");
   });
 });

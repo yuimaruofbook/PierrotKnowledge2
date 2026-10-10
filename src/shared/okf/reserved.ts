@@ -85,11 +85,21 @@ export function emptyLogMd(heading = "Log"): string {
   return `# ${heading}\n`;
 }
 
-/** ISO 8601 `YYYY-MM-DD` for a timestamp (§9 requires this heading form). */
+/**
+ * ISO 8601 `YYYY-MM-DD` for a timestamp (§9 requires this heading form).
+ *
+ * The *local* day, for the same reason daily notes use it: a day is a local
+ * idea. Slicing the UTC ISO string filed a morning JST write under yesterday's
+ * heading — a different date than the daily note describing the same moment,
+ * and one an `audit_changes` date filter would silently exclude.
+ */
 export function isoDate(at: string | Date): string {
-  const date = typeof at === "string" ? new Date(at) : at;
-  if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
-  return date.toISOString().slice(0, 10);
+  const parsed = typeof at === "string" ? new Date(at) : at;
+  const date = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
 }
 
 /** Map an action onto the conventional bold leading word. */
@@ -185,4 +195,56 @@ export function logDates(log: string): string[] {
     .split("\n")
     .map((line) => line.match(DATE_HEADING_RE)?.[1])
     .filter((date): date is string => Boolean(date));
+}
+
+export interface ParsedLogEntry {
+  /** The `## YYYY-MM-DD` section the entry sits under. */
+  date: string;
+  /** The bold leading word, e.g. "Creation" or "Update". */
+  kind: string;
+  path: string;
+  actor: string;
+  note?: string;
+}
+
+/**
+ * One rendered bullet, inverted. The lazy actor match plus the end anchor lets
+ * an actor contain dots (`process:fable-5.1`): the regex only accepts a split
+ * where what follows the period is either a spaced note or nothing.
+ */
+const LOG_BULLET_RE = /^\*\s+\*\*([^*]+)\*\*:\s*`([^`]+)`\s+by\s+(.+?)\.(?:\s+(.+))?$/;
+
+/**
+ * Parse `log.md` back into entries, newest first (the file's own order).
+ *
+ * Provenance is only auditable if the log can be read by machine as well as by
+ * eye; this is the inverse of `formatLogEntry` for exactly that purpose.
+ * Hand-written bullets that do not match the format are skipped, not errors —
+ * §9 allows free prose, and an audit over the recognisable rows beats refusing
+ * to audit at all.
+ */
+export function parseLogEntries(log: string): ParsedLogEntry[] {
+  const out: ParsedLogEntry[] = [];
+  let date = "";
+
+  for (const line of log.split("\n")) {
+    const heading = line.match(DATE_HEADING_RE);
+    if (heading) {
+      date = heading[1]!;
+      continue;
+    }
+    if (!date) continue; // a bullet above the first date heading has no date
+
+    const bullet = line.match(LOG_BULLET_RE);
+    if (!bullet) continue;
+    out.push({
+      date,
+      kind: bullet[1]!,
+      path: bullet[2]!,
+      actor: bullet[3]!,
+      ...(bullet[4] ? { note: bullet[4] } : {}),
+    });
+  }
+
+  return out;
 }

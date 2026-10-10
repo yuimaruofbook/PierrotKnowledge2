@@ -9,7 +9,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtemp, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
@@ -22,7 +22,7 @@ import {
   removeFromOpencodeJson,
   type StdioServer,
 } from "../src/bun/connect/merge";
-import { planUninstall } from "../src/bun/uninstall";
+import { desktopDirectories, launcherPathsFor, planUninstall } from "../src/bun/uninstall";
 import { removeTempDir } from "./helpers";
 
 const SERVER: StdioServer = {
@@ -211,5 +211,96 @@ describe("planning an uninstall", () => {
 
     expect(plan.items.map((i) => i.path)).not.toContain(install);
     expect(plan.installDir).toBe(install);
+  });
+});
+
+describe("refusing to rewrite a config we could not read", () => {
+  // Several of these hosts accept JSONC, so a config with `//` comments is a
+  // *working* config that JSON.parse rejects. Treating it as absent wrote back
+  // a file holding only our entry and silently deleted every other MCP server
+  // the user had — while reporting the connection as successful.
+  const JSONC = [
+    "{",
+    "  // the notion server",
+    '  "mcpServers": {',
+    '    "notion": { "command": "npx", "args": ["-y", "notion"] }',
+    "  },",
+    "}",
+  ].join("\n");
+
+  test("a JSONC config is refused, not silently replaced", () => {
+    expect(() => mergeMcpJson(JSONC, "okf-wiki", SERVER)).toThrow(/失われる/);
+    expect(() => mergeOpencodeJson(JSONC, "okf-wiki", SERVER)).toThrow(/失われる/);
+  });
+
+  test("unreadable YAML is refused too", () => {
+    const broken = "mcp_servers:\n  notion:\n    command: npx\n   bad: indent\n";
+    expect(() => mergeHermesYaml(broken, "okf-wiki", SERVER)).toThrow(/失われる/);
+  });
+
+  test("a valid config still keeps everything it had", () => {
+    const valid = JSON.stringify({
+      mcpServers: { notion: { command: "npx", args: [] } },
+      otherSetting: true,
+    });
+
+    const merged = JSON.parse(mergeMcpJson(valid, "okf-wiki", SERVER));
+    expect(Object.keys(merged.mcpServers).sort()).toEqual(["notion", "okf-wiki"]);
+    expect(merged.otherSetting).toBe(true);
+  });
+
+  test("absent or empty is still treated as a fresh config", () => {
+    for (const empty of [null, "", "   "]) {
+      const merged = JSON.parse(mergeMcpJson(empty, "okf-wiki", SERVER));
+      expect(merged.mcpServers["okf-wiki"]).toBeDefined();
+    }
+  });
+
+  test("removal never rewrites a config it could not read", () => {
+    // The safe direction: nothing of ours can be found, so nothing is written.
+    expect(removeFromMcpJson(JSONC, "okf-wiki")).toBeNull();
+    expect(removeFromOpencodeJson(JSONC, "okf-wiki")).toBeNull();
+  });
+});
+
+describe("finding the launchers setup wrote", () => {
+  test("a localised desktop is searched, not just ~/Desktop", async () => {
+    // A Japanese GNOME puts the desktop at ~/デスクトップ. Setup asks
+    // xdg-user-dir and writes there; an uninstall that only knows ~/Desktop
+    // leaves a menu entry pointing at an application that is gone.
+    const home = await mkdtemp(join(tmpdir(), "okf-home-"));
+    const config = join(home, ".config");
+    await mkdir(config, { recursive: true });
+    await writeFile(
+      join(config, "user-dirs.dirs"),
+      '# generated\nXDG_DESKTOP_DIR="$HOME/デスクトップ"\nXDG_MUSIC_DIR="$HOME/音楽"\n',
+      "utf8"
+    );
+
+    const previousHome = process.env.HOME;
+    const previousConfig = process.env.XDG_CONFIG_HOME;
+    process.env.HOME = home;
+    delete process.env.XDG_CONFIG_HOME;
+
+    try {
+      const dirs = desktopDirectories(home);
+      expect(dirs[0]).toBe(join(home, "デスクトップ"));
+      // The English default stays in the list: the setting may have changed
+      // since the launcher was written.
+      expect(dirs.some((d) => d.endsWith("Desktop"))).toBe(true);
+
+      const paths = launcherPathsFor("PierrotKnowledge2", dirs);
+      expect(paths.some((p) => p.includes("デスクトップ"))).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousConfig !== undefined) process.env.XDG_CONFIG_HOME = previousConfig;
+      await removeTempDir(home);
+    }
+  });
+
+  test("no user-dirs.dirs falls back to ~/Desktop", () => {
+    const dirs = desktopDirectories(join(tmpdir(), "okf-no-such-home"));
+    expect(dirs).toContain(join(tmpdir(), "okf-no-such-home", "Desktop"));
   });
 });

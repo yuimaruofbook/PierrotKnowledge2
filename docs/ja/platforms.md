@@ -24,22 +24,41 @@ macOS でも大小文字を無視するよう修正しました。判定が厳�
 
 ### 2. zip から取り出したスクリプトが実行できなかった
 
-リリースの zip は Windows の `Compress-Archive` で作っており、**Unix の
-パーミッションを記録しません。** 展開すると `PierrotKnowledge2` も
+リリースの zip は Windows で作られており、以前は **Unix のパーミッションを
+まったく記録していませんでした。** 展開すると `PierrotKnowledge2` も
 `SETUP.command` も実行権限のない 0644 で出てきます。
 
-`scripts/setup.sh` が最初に実行権限を復元するようにしました。setup 自体は
-`bash scripts/setup.sh` で起動できるので、権限が無くても問題ありません。
+**zip 側を直しました。** 生成を `bsdtar` に変え、さらに zip の中央ディレクトリに
+記録されるモードを正規化しています（ファイル 0644 / ディレクトリ 0755 /
+起動用スクリプト 5 本だけ 0755）。以前は全エントリが 0666・0777、つまり
+**実行不可かつ world-writable** でした（`unzip` が umask を適用するので
+気づかれていなかっただけです）。
+
+あわせて、`Compress-Archive` が**パス区切りにバックスラッシュを書く**問題も
+直しました。ZIP 仕様（4.4.17.1）違反で、`unzip` は警告付きで復旧しますが、
+他の展開ツールが区切りをただの文字として扱えばツリーが壊れます。
+
+**インストールはこれだけです:**
 
 ```bash
-bun install && bun run setup:unix
+bash SETUP.command
 ```
 
-手で直す場合:
+現行の zip なら `./SETUP.command` でも動きますが、`bash` 経由なら
+**どんな経緯でそのファイルが手元に来ても**動きます（古いリリース、
+メールでの受け渡し、権限を落とすコピーなど）。setup が権限を復元し、
+macOS では隔離属性（`com.apple.quarantine`）も解除するので、**次回からは
+ダブルクリックでも起動できます。**
 
-```bash
-chmod +x PierrotKnowledge2 SETUP.command
-```
+以前は「Bun を入れてから `bun install && bun run setup:unix`」と案内して
+いましたが、Bun を入れるのが setup の仕事なので手順が循環していました。
+
+`--connect` を付けるとエージェント各ツールへの登録まで行います
+（Windows の `SETUP.bat -Connect` と同じ）。
+
+> **更新でも権限は復元されます。** 更新は zip を展開して置き換えるので、
+> 以前は `Update --apply` のたびにランチャーが 0644 に戻り、次の
+> `./PierrotKnowledge2` が Permission denied になっていました。
 
 ### 3. アンインストールが Windows のショートカットしか消さなかった
 
@@ -48,6 +67,32 @@ macOS の `.app` シンボリックリンクと `.command`、Linux の `.desktop
 
 > Linux の `.desktop` ファイルは改名前の `okf-wiki.desktop` という名前で
 > 作られています。アンインストールは新旧どちらの名前も探します。
+
+**デスクトップの場所も英語圏前提でした。** 日本語の GNOME は
+`~/デスクトップ`、スペイン語圏は `~/Escritorio` です。setup は
+`xdg-user-dir`（無ければ `user-dirs.dirs` を直接読む）に従って置き、
+アンインストールは同じ設定を読むようになりました。
+
+macOS / Linux にはアンインストールの入口自体がありませんでした
+（`./PierrotKnowledge2 Uninstall` を知っている必要があった）。
+`UNINSTALL.command` を追加しています:
+
+```bash
+bash UNINSTALL.command          # 何が消えて何が残るかを表示するだけ
+bash UNINSTALL.command --apply  # 実行する
+```
+
+### 3.5. GUI から起動したエージェントが MCP サーバーを起動できなかった
+
+`setup.sh` が書き出す `mcp-config.json` は `"command": "bun"` と手書きされて
+いました。**macOS の GUI アプリは launchd の PATH
+（`/usr/bin:/bin:/usr/sbin:/sbin`）しか継承しません。** ここに `~/.bun/bin`
+は入らないので、Finder から起動した Claude Desktop などは MCP サーバーを
+起動できず、しかも理由は表示されませんでした。
+
+アプリ本体と同じ経路（`serverSpecFor`）で生成するようにしました。
+ビルド済みのヘッドレスバイナリがあればそれを、無ければ **Bun の絶対パス**を
+書きます。
 
 ### 4. 更新の展開が `unzip` に依存していた
 

@@ -24,6 +24,14 @@ describe("opening a file", () => {
     expect(initialViewMode("wiki/note.markdown", false)).toBe("preview");
   });
 
+  test("HTML opens in reading view too", () => {
+    // A captured page is a document, not source: opening it into the textarea
+    // shows the tags rather than what the page said.
+    expect(initialViewMode("raw/notion/2026-08-08-page.html", false)).toBe("preview");
+    expect(initialViewMode("raw/saved.htm", false)).toBe("preview");
+    expect(initialViewMode("raw/PAGE.HTML", false)).toBe("preview");
+  });
+
   test("a file the renderer cannot render opens in the editor", () => {
     // Markdown-rendering a JSON file hides its braces and quotes, which are
     // its content rather than markup.

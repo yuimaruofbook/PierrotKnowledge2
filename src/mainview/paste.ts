@@ -19,6 +19,7 @@ import TurndownService from "turndown";
 import {
   decidePaste,
   type PasteDecision,
+  type PasteMode,
   type PasteSource,
 } from "../shared/paste";
 import { gfm } from "turndown-plugin-gfm";
@@ -126,6 +127,24 @@ export function htmlToMarkdown(html: string): string {
   return markdown.replace(/\n{3,}/g, "\n\n").trim();
 }
 
+/**
+ * Keep clipboard HTML as HTML, minus the wrapper the source put around it.
+ *
+ * What a browser or Word puts on `text/html` is a fragment wrapped in a charset
+ * `<meta>`, Office's `<!--StartFragment-->` markers and often a whole
+ * stylesheet. None of that is the content, and the stylesheet in particular
+ * would be dropped at render time anyway — so it is removed here rather than
+ * written into the file.
+ *
+ * The markup that remains is *not* trusted by anything downstream: it is stored
+ * as text and sanitised when rendered, the same as any other captured HTML.
+ */
+export function keepHtml(html: string): string {
+  return stripNoise(html)
+    .replace(/<\/?(html|body|meta|link|base)\b[^>]*>/gi, "")
+    .trim();
+}
+
 /** Read both clipboard flavours from a paste event. */
 export function readClipboard(data: DataTransfer | null): PasteSource {
   return {
@@ -134,7 +153,7 @@ export function readClipboard(data: DataTransfer | null): PasteSource {
   };
 }
 
-/** Decide what to insert, using the Turndown-backed converter. */
-export function decidePasteContent(source: PasteSource, forcePlain = false): PasteDecision {
-  return decidePaste(source, htmlToMarkdown, forcePlain);
+/** Decide what to insert, using the Turndown-backed converters. */
+export function decidePasteContent(source: PasteSource, mode: PasteMode = "auto"): PasteDecision {
+  return decidePaste(source, { markdown: htmlToMarkdown, html: keepHtml }, mode);
 }

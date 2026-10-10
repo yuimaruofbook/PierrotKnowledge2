@@ -16,6 +16,33 @@ export interface ParsedArgs {
   flags: Record<string, string | boolean>;
 }
 
+/**
+ * Whether a token is a flag rather than a value.
+ *
+ * A flag name begins with a letter, which is what separates `--limit` from a
+ * value that merely opens with dashes. `--` itself is the terminator and is
+ * handled before this is reached.
+ */
+function isFlagToken(token: string): boolean {
+  // `--` itself counts, even though it names no flag: it is the terminator, and
+  // letting a preceding bare flag eat it (`--quiet -- --設計`) both loses the
+  // terminator and turns the positional after it back into a flag.
+  return /^--([A-Za-z]|$)/.test(token);
+}
+
+/**
+ * Normalise a flag name to the underscore spelling the code reads.
+ *
+ * Commands already accept both (`resolveTool` folds `skill-find` to
+ * `skill_find`); flags did not, so `--purge-settings` — the spelling the
+ * uninstall help itself prints — landed in `flags["purge-settings"]` while the
+ * handler read `flags.purge_settings`, and the documented flag did nothing at
+ * all. One rule for both halves of the command line.
+ */
+function flagName(name: string): string {
+  return name.replace(/-/g, "_");
+}
+
 export function parseArgv(argv: readonly string[]): ParsedArgs {
   const positional: string[] = [];
   const flags: Record<string, string | boolean> = {};
@@ -38,16 +65,21 @@ export function parseArgv(argv: readonly string[]): ParsedArgs {
     const eq = body.indexOf("=");
 
     if (eq !== -1) {
-      flags[body.slice(0, eq)] = body.slice(eq + 1);
+      flags[flagName(body.slice(0, eq))] = body.slice(eq + 1);
       continue;
     }
 
     const next = argv[i + 1];
     // A bare flag is `true`; anything else consumes the following token.
-    if (next === undefined || next.startsWith("--")) {
-      flags[body] = true;
+    //
+    // "Looks like a flag" has to mean a *name*, not merely a leading `--`.
+    // Markdown frontmatter starts `---`, so testing `startsWith("--")` read
+    // `--content '---\ntype: Note\n---\n\n…'` as a valueless flag and wrote an
+    // empty file over the content the caller passed.
+    if (next === undefined || isFlagToken(next)) {
+      flags[flagName(body)] = true;
     } else {
-      flags[body] = next;
+      flags[flagName(body)] = next;
       i++;
     }
   }

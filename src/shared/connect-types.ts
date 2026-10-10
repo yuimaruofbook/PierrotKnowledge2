@@ -28,6 +28,8 @@ export interface BulkConnectOutcome {
   backup?: string;
   /** For `manual`: the command to run. */
   command?: string;
+  /** For `manual`: `command` is a config snippet to paste, not something to run. */
+  snippet?: boolean;
   /** For `skipped` and `failed`: why. */
   reason?: string;
 }

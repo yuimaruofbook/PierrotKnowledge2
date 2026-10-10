@@ -48,8 +48,12 @@ configuration.
 ### macOS / Linux
 
 ```bash
-bun install && bun run setup:unix
+bash SETUP.command            # add --connect to register with agent hosts
 ```
+
+`bash`, not `./`: the zip carries no Unix permission bits, so nothing is
+executable yet. Setup restores them and clears macOS's quarantine flag, so
+double-clicking works from then on. Bun is installed if it is missing.
 
 ### Building pieces individually
 
@@ -160,7 +164,8 @@ flight.
 | You | yes | yes | through the app |
 | An agent | **no** | yes | through the app |
 
-`raw/` is your inbox, and imports from Notion or Google Drive land there.
+`raw/` is your inbox: imports from Notion or Google Drive land there, and so do
+files you drop on the window.
 **Agents cannot write to it** — the record of what actually arrived must not be
 rewritable by the thing summarising it.
 
@@ -213,12 +218,12 @@ switched between, not two columns.
 
 ### Documents open in reading view
 
-Opening a `.md` file shows it **rendered**. Frontmatter and link syntax are not
-what you should see first on a page you came to read.
+Opening a `.md` or `.html` file shows it **rendered**. Frontmatter, link syntax
+and markup are not what you should see first on a page you came to read.
 
 Toggle with **[表示 | 編集]** (View | Edit) at the left of the format bar.
-Binary files and non-Markdown text open in the editor instead, because there is
-nothing to render.
+Binary files and text that neither renderer understands open in the editor
+instead, because there is nothing to render.
 
 ### Format bar
 
@@ -243,6 +248,28 @@ live and saves when you let go.
 Content copied from other tools **keeps its formatting**. HTML is converted to
 Markdown before insertion, so headings and lists do not collapse into plain
 text.
+
+| Key | What is inserted |
+|---|---|
+| `Ctrl+V` | HTML converted to Markdown (default) |
+| `Ctrl+Shift+V` | Plain text, no formatting |
+| `Ctrl+Alt+V` | **The HTML as it is** |
+
+Into an open `.html` file, `Ctrl+V` keeps the HTML too — Markdown inserted
+there would never be rendered as Markdown.
+
+### Capturing HTML
+
+- **Drop files on the window** and they are captured into `raw/` and opened.
+  Text files only, up to 8 MB.
+- **MCP imports** are stored as `.html` when the tool returned a page, rather
+  than as `.md` full of tags. The capture itself is kept byte-for-byte.
+
+Captured pages render through an allowlist: `script`, `style`, `iframe`,
+inline event handlers and unlisted attributes are dropped, and links are
+limited to `http(s)`, `mailto` and internal targets. A page copied into the
+bundle is third-party code, so this is deliberate — the cost is that the
+page's own CSS does not apply.
 
 ---
 
@@ -374,6 +401,8 @@ work in both.
 | Codex | `~/.codex/config.toml` |
 | opencode | `~/.config/opencode/opencode.json` |
 | Hermes Agent | `~/.hermes/config.yaml` |
+| Strata (chat MCP tools) | `%APPDATA%\PierrotKnowledge2\strata-mcp.json` — start Strata with `--mcp-config <this file>` |
+| Unsloth Desktop (MCP tools) | its database — **a JSON snippet is shown** to paste into its MCP import |
 
 **変更内容を見る** (Preview) shows the exact text to be written. **ワンタッチ
 接続** (Connect) applies it, after copying the original to
@@ -382,10 +411,17 @@ is added or replaced.
 
 ### Local execution
 
-Ollama and llama.cpp are **not MCP clients**. They can emit tool calls but
-nothing executes them, so **this app runs the agent loop itself**. Pick a
+Ollama, llama.cpp, LM Studio, vLLM, Strata (`127.0.0.1:8080/v1`) and Unsloth
+Desktop (`127.0.0.1:8888/v1`) are **not MCP clients**. They can emit tool calls
+but nothing executes them, so **this app runs the agent loop itself**. Pick a
 server, a model and a task; each step and its token spend streams as it
 happens.
+
+Unsloth's API is authenticated: set the `sk-unsloth-…` key from Settings → API
+in `UNSLOTH_API_KEY` (Strata started with `--api-key`: `STRATA_API_KEY`). Keys
+are read from the environment, never written to a file. A server that is not
+running is reported beside the model picker, with a retry button, rather than
+as an error.
 
 ---
 

@@ -102,8 +102,8 @@ gist 自身がスケール限界を認めています。
 | 正典の操作 | 本アプリでの手段 |
 |-----------|----------------|
 | **Ingest** | 資料を `raw/` に置く → エージェントが `read_file` で読み `create_concept` で概念化 → `rebuild_index` |
-| **Query** | `retrieve`（引用アンカー・文字数予算付き）／ `search`（場所を探す）／ UI の `Ctrl+K` |
-| **Lint** | `check_conformance`（OKF 違反）／ `unresolved_links`（欠落知識）／ ステータスバーの非準拠件数 |
+| **Query** | `retrieve`（引用アンカー・文字数予算付き）／ `context_pack`（作業開始時に必要な最小ファイル群）／ `search`（場所を探す）／ UI の `Ctrl+K` |
+| **Lint** | `check_conformance`（OKF 違反）／ `unresolved_links`（欠落知識）／ `audit_changes`（誰が何を変えたか）／ ステータスバーの非準拠件数 |
 
 ---
 

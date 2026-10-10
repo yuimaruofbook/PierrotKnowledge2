@@ -51,8 +51,13 @@ SETUP.bat -Connect
 ### macOS / Linux
 
 ```bash
-bun install && bun run setup:unix
+bash SETUP.command            # 登録まで行うなら --connect
 ```
+
+`./SETUP.command` ではなく `bash` 経由なのは、zip が Unix の実行権限を
+持たないためです。setup が権限を復元し、macOS では隔離属性も解除するので、
+次回からはダブルクリックでも起動できます。Bun が無ければ入れるところから
+やります。
 
 ### 個別にビルドする
 
@@ -163,9 +168,9 @@ bundle/
 | 人間 | ○ | ○ | アプリ経由 |
 | エージェント | **×** | ○ | アプリ経由 |
 
-`raw/` はあなたの受信箱です。Notion や Google ドライブからの取り込みもここに
-入ります。**エージェントは書けません** — 要約する側が、実際に届いた記録を
-書き換えられないようにするためです。
+`raw/` はあなたの受信箱です。Notion や Google ドライブからの取り込みも、
+ウィンドウに落としたファイルもここに入ります。**エージェントは書けません** —
+要約する側が、実際に届いた記録を書き換えられないようにするためです。
 
 `wiki/` の中は人間もエージェントも自由に作成・編集・移動できます。
 `raw/` から `wiki/` へ引き上げるのは人間の操作です。
@@ -254,6 +259,30 @@ frontmatter やリンク記法が最初に目に入るのは違うためです�
 他のツールからのコピーは**書式を保ったまま**入ります。HTML を
 Markdown に変換してから挿入するので、見出しや箇条書きが平文に
 潰れません。
+
+| キー | 挿入されるもの |
+|---|---|
+| `Ctrl+V` | HTML を Markdown に変換（既定） |
+| `Ctrl+Shift+V` | 書式なしのプレーンテキスト |
+| `Ctrl+Alt+V` | **HTML のまま** |
+
+`.html` ファイルを開いているときは `Ctrl+V` も HTML のまま入ります。
+そこに Markdown を入れても描画されないからです。
+
+### HTML の取り込みと表示
+
+`.html` / `.htm` は Markdown と同じく**読書ビューで開きます**。タグではなく
+ページとして表示されます。
+
+- **ドラッグ&ドロップ** — ウィンドウにファイルを落とすと `raw/` に取り込まれ、
+  そのまま開きます。テキストファイルのみ（PDF や画像は取り込めません）。
+- **MCP 取り込み** — 取得結果が HTML なら `.md` ではなく `.html` として
+  保存されます。原本は一切書き換えません。
+
+描画時は許可リストで絞り込まれます。`script` / `style` / `iframe` と
+インラインイベント属性は落ち、リンク先は `http(s)` などに限られます。
+**取り込んだページは第三者のコードだから**で、見た目より安全を優先しています
+（元の CSS は適用されません）。
 
 ---
 
@@ -417,6 +446,8 @@ Obsidian のノートは元々 Markdown なので、そのまま `wiki/` へ引�
 | Antigravity | `~/.gemini/config/mcp_config.json`（IDE / CLI 共通） |
 | Cursor（全プロジェクト） | `~/.cursor/mcp.json` |
 | Claude Code（全プロジェクト） | `~/.claude.json` — **コマンドを表示します** |
+| Strata（チャットの MCP ツール） | `%APPDATA%\PierrotKnowledge2\strata-mcp.json` |
+| Unsloth Desktop（MCP ツール） | データベース — **JSON を表示します** |
 
 最後の 1 つだけ、**本アプリは設定ファイルを書きません。** Claude Code の
 ユーザースコープは `~/.claude.json` に入りますが、このファイルはプロジェクト
@@ -424,9 +455,19 @@ Obsidian のノートは元々 Markdown なので、そのまま `wiki/` へ引�
 いる環境を壊しかねないので、公式が案内する `claude mcp add` のコマンドを
 表示します。そのままコピーして実行してください。
 
+**Strata** は、本アプリが書いた `strata-mcp.json` を `--mcp-config` で読みます。
+`run-<model>.bat` の `serve/server.py` の行に `--mcp-config <このファイル>` を
+足して Strata を再起動すると、Strata のチャット画面から okf-wiki のツールが
+使えます。Strata 自身の `strata-<model>.json` はセットアップが書き換えるため、
+本アプリは触りません。
+
+**Unsloth Desktop** は MCP サーバーをデータベースに保存しているため、本アプリは
+書き込みません。表示される `mcpServers` 形式の JSON を、Unsloth の
+Manage MCP servers のインポートに貼り付けてください。
+
 #### 一覧に無いツールに繋ぐ
 
-同じ PC の MCP 対応ツールは、上の 9 つだけではありません。**一覧に無いツールへは、
+同じ PC の MCP 対応ツールは、上の 11 個だけではありません。**一覧に無いツールへは、
 設定を出力して貼り付けます。**
 
 ```powershell
@@ -470,7 +511,8 @@ Codex / Claude Code / opencode / Pi を**それぞれ別の git worktree で並�
 
 ### ローカル実行
 
-Ollama・llama.cpp・**LM Studio**・**vLLM** は **MCP クライアントではありません**。
+Ollama・llama.cpp・**LM Studio**・**vLLM**・**Strata**・**Unsloth Desktop** は
+**MCP クライアントではありません**。
 ツール呼び出しを出力できても実行する側がないので、**本アプリがエージェント
 ループを内蔵**しています。
 
@@ -480,8 +522,18 @@ Ollama・llama.cpp・**LM Studio**・**vLLM** は **MCP クライアントでは
 | llama.cpp | `localhost:8080/v1` | `--jinja` 必須 |
 | LM Studio | `localhost:1234/v1` | モデルを読み込み「Start Server」 |
 | vLLM | `localhost:8000/v1` | `--enable-auto-tool-choice` と `--tool-call-parser` の**両方**が必要 |
+| Strata | `127.0.0.1:8080/v1` | `START-HERE.bat` で起動。llama.cpp と同じポートなので同時には使えない |
+| Unsloth Desktop | `127.0.0.1:8888/v1` | モデルを読み込み、API キーを環境変数 `UNSLOTH_API_KEY` に設定 |
 
-いずれも認証は不要です（ループバック限定のため）。
+Unsloth 以外は認証不要です（ループバック限定のため）。**Unsloth の API は認証付き**
+なので、Settings → API で作った `sk-unsloth-…` キーを環境変数 `UNSLOTH_API_KEY`
+に設定してください。Strata を `--api-key` 付きで起動した場合は、その値を
+`STRATA_API_KEY` に設定します。キーは環境変数から読むだけで、ファイルには書きません。
+
+パネルを開くと、**このマシンで見つかったサーバー**が最初から選ばれます。
+サーバーが起動していないときは、エラーを出す代わりに、モデル欄の下に理由と
+起動手順、「再試行」ボタンを表示します。見つからなかったツールは
+「未検出のツール（n）」に折りたたまれます。
 
 サーバー・モデル・依頼を選んで実行すると、各ステップと**消費トークンが
 その場で流れます**。

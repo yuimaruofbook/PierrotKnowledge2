@@ -7,8 +7,12 @@
  * lists, links and tables arrived as undifferentiated prose.
  *
  * The *policy* lives here, free of the DOM, because getting it wrong silently
- * mangles someone's paste. The HTML→Markdown *mechanism* needs a DOM and lives
- * in the view layer.
+ * mangles someone's paste. The conversion *mechanisms* need a DOM and live in
+ * the view layer.
+ *
+ * Converting to Markdown is the default rather than the only option: the
+ * clipboard's HTML is the richer flavour, and a file that is itself HTML has no
+ * reason to give that up.
  */
 
 /** Markdown signals strong enough to mean "this text is already Markdown". */
@@ -44,34 +48,57 @@ export interface PasteSource {
 }
 
 export interface PasteDecision {
-  markdown: string;
+  content: string;
   /** Which flavour was used — surfaced in the status bar so it is not a mystery. */
   from: "html" | "text";
+  /** What was inserted, which is not the same question as where it came from. */
+  format: "markdown" | "html";
 }
 
 /**
- * Decide what to insert.
+ * How much say the user has taken over the choice.
  *
- * `convert` is injected so this stays testable without a DOM. `forcePlain` is
- * the escape hatch for when the heuristic guesses wrong; it is bound to the
- * Ctrl+Shift+V that every editor uses for "paste without formatting".
+ *   - `auto` — the heuristic below decides.
+ *   - `plain` — the escape hatch for when it guesses wrong, bound to the
+ *     Ctrl+Shift+V that every editor uses for "paste without formatting".
+ *   - `html` — keep the markup. Chosen deliberately (Ctrl+Alt+V), and the
+ *     default when the open file *is* HTML, where converting the clipboard to
+ *     Markdown would insert syntax that the file never renders.
  */
+export type PasteMode = "auto" | "plain" | "html";
+
+/** Both conversions, injected so this stays testable without a DOM. */
+export interface PasteConverters {
+  /** Clipboard HTML → Markdown. */
+  markdown: (html: string) => string;
+  /** Clipboard HTML → HTML worth keeping, with the wrapper noise removed. */
+  html: (html: string) => string;
+}
+
+/** Nothing to keep from the HTML flavour; the plain one is what is left. */
+function plain(source: PasteSource): PasteDecision {
+  return { content: source.text, from: "text", format: "markdown" };
+}
+
+/** Decide what to insert. */
 export function decidePaste(
   source: PasteSource,
-  convert: (html: string) => string,
-  forcePlain = false
+  convert: PasteConverters,
+  mode: PasteMode = "auto"
 ): PasteDecision {
-  if (forcePlain || !source.html?.trim()) {
-    return { markdown: source.text, from: "text" };
+  if (mode === "plain" || !source.html?.trim()) return plain(source);
+
+  if (mode === "html") {
+    const kept = convert.html(source.html);
+    if (!kept.trim()) return plain(source);
+    return { content: kept, from: "html", format: "html" };
   }
 
-  if (source.text.trim() && looksLikeMarkdown(source.text)) {
-    return { markdown: source.text, from: "text" };
-  }
+  if (source.text.trim() && looksLikeMarkdown(source.text)) return plain(source);
 
-  const converted = convert(source.html);
+  const converted = convert.markdown(source.html);
   // HTML that carries no more than the plain text is not worth preferring.
-  if (!converted.trim()) return { markdown: source.text, from: "text" };
+  if (!converted.trim()) return plain(source);
 
-  return { markdown: converted, from: "html" };
+  return { content: converted, from: "html", format: "markdown" };
 }

@@ -560,6 +560,23 @@ kbd {
   box-shadow: inset 0 0 0 1px var(--accent);
 }
 
+/*
+ * Dragging files in from outside.
+ *
+ * The whole window is the target — the drop is caught there anyway, so drawing
+ * a smaller zone would only invite aiming at it. An inset rule, not an overlay:
+ * the content stays readable, which is how you tell what you are dropping onto.
+ */
+body.capturing::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: var(--accent-tint);
+}
+
 /* ---------- main ---------- */
 
 .main {
@@ -2181,4 +2198,46 @@ kbd,
   .format-width {
     display: none;
   }
+}
+
+/* Why the local run cannot start yet, shown under the model picker. */
+.conn-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.conn-status:empty {
+  display: none;
+}
+
+.conn-status.warn {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.conn-status .conn-desc {
+  margin: 0;
+}
+
+/* Tools not found on this machine, folded under the ones that are. */
+.conn-missing {
+  margin-top: 8px;
+}
+
+.conn-missing > summary {
+  padding: 8px 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.conn-missing > summary:hover {
+  color: var(--text);
 }

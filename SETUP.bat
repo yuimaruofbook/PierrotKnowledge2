@@ -28,6 +28,10 @@ rem    SETUP.bat -Headless                     MCP server only, no interface
 rem
 rem  Switches can be combined:  SETUP.bat -Headless -Connect
 rem
+rem  TO REMOVE IT AGAIN: double-click UNINSTALL.bat. It shows a plan first and
+rem  deletes nothing until you re-run it with -Apply. Your notes are never in
+rem  that plan.
+rem
 rem  NOTE: this file is deliberately ASCII-only. cmd.exe reads .bat files in the
 rem  system OEM codepage (932 on Japanese Windows), so non-ASCII bytes here are
 rem  misdecoded and corrupt the script itself. All localised text lives in

@@ -34,9 +34,10 @@ import {
   openTasks,
   renderHumanTemplate,
   type Task,
+  type TaskFile,
   type TaskStatus,
 } from "../shared/okf/workspace-files";
-import { isConceptPath } from "../shared/okf";
+import { isConceptPath, isoDate, parseLogEntries, type ParsedLogEntry } from "../shared/okf";
 import { Bundle } from "./okf/bundle";
 import { skeletonConcept } from "./okf/parser";
 import { LOOPS_DIR, RAG_DIR, SKILLS_DIR } from "./okf/paths";
@@ -44,7 +45,13 @@ import { SkillSpace } from "./okf/skills";
 import { LoopSpace } from "./okf/loops";
 import { scaffoldBundle, type ScaffoldResult } from "./okf/scaffold";
 import { FtsIndex, type SearchOptions } from "./rag/fts";
-import { retrieve, type RetrieveOptions } from "./rag/retrieve";
+import { DEFAULT_BUDGET_CHARS, retrieve, type RetrieveOptions } from "./rag/retrieve";
+import {
+  TIER_DEFAULTS,
+  groupPassages,
+  type ContextPack,
+  type ContextTier,
+} from "./rag/context-pack";
 import { BundleWatcher } from "./watch";
 
 /**
@@ -140,6 +147,17 @@ export class Workspace {
     this.watcher?.ignoreNext(relPath);
   }
 
+  /**
+   * Suppress the watcher event for the `log.md` row an operation is about to
+   * append. Every mutating operation writes one, so every one of them owes
+   * this call — otherwise the app reports its own bookkeeping as an edit made
+   * from outside.
+   */
+  private markLogWrite(): void {
+    const bundle = this.requireBundle();
+    this.markSelfWrite(bundle.paths.toRel(bundle.paths.logMdPath));
+  }
+
   private isSelfWrite(relPath: string): boolean {
     const at = this.selfWrites.get(relPath);
     if (at === undefined) return false;
@@ -192,6 +210,7 @@ export class Workspace {
   ): Promise<{ promoted: string; source: string; kept: boolean }> {
     const bundle = this.requireBundle();
     this.markSelfWrite(to);
+    this.markLogWrite();
 
     const result = await bundle.promoteFromRaw(from, to, opts);
     this.fts?.sync(bundle.allConcepts());
@@ -209,7 +228,8 @@ export class Workspace {
   async setPara(
     path: string,
     to: ParaClass,
-    by: "human" | "agent" = "human"
+    by: "human" | "agent" = "human",
+    actor?: string
   ): Promise<{ from: string; to: string; para: ParaClass; moved: boolean }> {
     const bundle = this.requireBundle();
     const wikiRel = bundle.paths.toWikiRel(bundle.paths.resolve(path));
@@ -220,7 +240,14 @@ export class Workspace {
     }
 
     const nextPath = bundle.paths.wikiDir ? `${bundle.paths.wikiDir}/${nextWikiRel}` : nextWikiRel;
-    const result = await this.move(path, nextPath, `${by}:local`, by);
+    // The default tag matches the caller's kind, so an agent refile is
+    // findable with the same 'process:' audit filter as its other writes.
+    const result = await this.move(
+      path,
+      nextPath,
+      actor ?? (by === "agent" ? "process:mcp" : "human:local"),
+      by
+    );
     return { from: path, to: result.moved, para: to, moved: true };
   }
 
@@ -306,9 +333,7 @@ export class Workspace {
     if (result.concept) this.fts?.upsert(result.concept);
 
     // The log row is our own write too; do not bounce it back to the UI.
-    if (opts.log !== false) {
-      this.markSelfWrite(bundle.paths.toRel(bundle.paths.logMdPath));
-    }
+    if (opts.log !== false) this.markLogWrite();
 
     await this.journal(opts.action === "create" ? "create" : "write", path);
 
@@ -327,6 +352,85 @@ export class Workspace {
   /** Assemble budgeted, cited context for an agent. */
   retrieve(query: string, options: RetrieveOptions = {}): RetrievalResult {
     return retrieve(this.requireFts(), query, options);
+  }
+
+  /**
+   * Assemble a context pack: the minimal file set for a task, plus the skills
+   * that match it, sized to the model tier that will consume it.
+   *
+   * This is retrieval regrouped for starting work rather than answering a
+   * question — see `context-pack.ts` for why the two are different jobs.
+   */
+  async contextPack(
+    task: string,
+    options: RetrieveOptions & { tier?: ContextTier } = {}
+  ): Promise<ContextPack> {
+    const defaults = options.tier
+      ? TIER_DEFAULTS[options.tier]
+      : { budgetChars: DEFAULT_BUDGET_CHARS, limit: 8 };
+    const budgetChars = options.budgetChars ?? defaults.budgetChars;
+
+    const retrieval = this.retrieve(task, {
+      ...options,
+      budgetChars,
+      limit: options.limit ?? defaults.limit,
+    });
+
+    const bundle = this.requireBundle();
+    const files = groupPassages(retrieval, (id) => {
+      const description = bundle.getConcept(id)?.frontmatter.description;
+      return typeof description === "string" && description.trim() ? description : undefined;
+    });
+
+    const found = await this.requireSkills().find(task, 3);
+
+    return {
+      task,
+      ...(options.tier ? { tier: options.tier } : {}),
+      budgetChars,
+      files,
+      skills: found.ranked.map((r) => ({
+        name: r.name,
+        description: r.description,
+        score: r.score,
+      })),
+      usedChars: retrieval.usedChars,
+      truncated: retrieval.truncated,
+    };
+  }
+
+  /**
+   * Group log.md rows by actor: who — human or which model — changed what.
+   *
+   * The audit multiple-model setups need before trusting agent-written pages.
+   * Rows the parser cannot read (hand-written prose, which §9 allows) are
+   * simply absent, so this reports what the log records, not more.
+   */
+  async auditChanges(
+    opts: { since?: string; actor?: string } = {}
+  ): Promise<{
+    total: number;
+    since?: string;
+    actors: Array<{ actor: string; count: number; entries: ParsedLogEntry[] }>;
+  }> {
+    const log = await this.requireBundle().readLog();
+
+    let entries = parseLogEntries(log);
+    if (opts.since) entries = entries.filter((entry) => entry.date >= opts.since!);
+    if (opts.actor) entries = entries.filter((entry) => entry.actor.includes(opts.actor!));
+
+    const byActor = new Map<string, ParsedLogEntry[]>();
+    for (const entry of entries) {
+      const list = byActor.get(entry.actor);
+      if (list) list.push(entry);
+      else byActor.set(entry.actor, [entry]);
+    }
+
+    const actors = [...byActor.entries()]
+      .map(([actor, list]) => ({ actor, count: list.length, entries: list }))
+      .sort((a, b) => b.count - a.count || a.actor.localeCompare(b.actor));
+
+    return { total: entries.length, ...(opts.since ? { since: opts.since } : {}), actors };
   }
 
   tags(): TagCount[] {
@@ -376,6 +480,7 @@ export class Workspace {
     const bundle = this.requireBundle();
     this.markSelfWrite(from);
     this.markSelfWrite(to);
+    this.markLogWrite();
 
     const result = await bundle.movePath(from, to, { actor, by });
     for (const path of result.updated) this.markSelfWrite(path);
@@ -392,6 +497,7 @@ export class Workspace {
   ): Promise<{ deleted: string; brokenLinksFrom: string[] }> {
     const bundle = this.requireBundle();
     this.markSelfWrite(path);
+    this.markLogWrite();
 
     const result = await bundle.deletePath(path, { actor, by });
     this.requireFts().rebuild(bundle.allConcepts());
@@ -446,12 +552,14 @@ export class Workspace {
     if (existing !== null) return existing;
 
     const template = renderHumanTemplate();
-    await bundle.writeHuman(template);
+    await this.writeHuman(template);
     return template;
   }
 
   async writeHuman(content: string): Promise<void> {
-    await this.requireBundle().writeHuman(content);
+    const bundle = this.requireBundle();
+    this.markSelfWrite(bundle.paths.toRel(bundle.paths.humanMdPath));
+    await bundle.writeHuman(content);
   }
 
   // ---- daily notes --------------------------------------------------------
@@ -471,7 +579,7 @@ export class Workspace {
     const existing = await bundle.readFile(relPath).catch(() => null);
     if (existing) return { path: relPath, created: false };
 
-    await bundle.writeFile(
+    await this.writeFile(
       relPath,
       skeletonConcept({
         type: "Daily",
@@ -508,20 +616,27 @@ export class Workspace {
     const pending = pendingTaskLines(file.content);
     if (pending.length === 0) return [];
 
-    const created: Task[] = [];
-    let body = file.content;
-
-    for (const item of pending) {
-      const task = await this.addTask({
+    // One write of Task.md for the whole note, rather than one per line.
+    const created = await this.addTasks(
+      pending.map((item) => ({
         title: item.text,
         // Where it came from, so the task is traceable back to the day.
         note: `${dailyId(date)} のノートから`,
-      });
-      created.push(task);
-      body = markTransferred(body, item.line, task.id);
+      }))
+    );
+
+    let body = file.content;
+    for (const [at, item] of pending.entries()) {
+      body = markTransferred(body, item.line, created[at]!.id);
     }
 
-    await bundle.writeFile(relPath, body, { actor: "agent", action: "update" });
+    // 'process:', not a bare 'agent': the transfer is automated whichever
+    // front end asked for it, and the audit filter for automation is 'process:'.
+    await this.writeFile(relPath, body, {
+      by: "agent",
+      actor: "process:task-collect",
+      action: "update",
+    });
     return created;
   }
 
@@ -533,28 +648,44 @@ export class Workspace {
     return file.tasks.filter((task) => task.status === status);
   }
 
-  async addTask(input: {
-    title: string;
-    status?: TaskStatus;
-    para?: ParaClass;
-    due?: string;
-    note?: string;
-  }): Promise<Task> {
+  async addTask(input: TaskInput): Promise<Task> {
+    const [task] = await this.addTasks([input]);
+    return task!;
+  }
+
+  /**
+   * Add several tasks in one read-modify-write of `Task.md`.
+   *
+   * Ids are allocated against the list as it grows, so a batch cannot collide
+   * with itself. Doing this per task would rewrite the whole file once each
+   * time and leave a window between writes for the watcher — or another
+   * writer — to see a half-transferred list.
+   */
+  async addTasks(inputs: readonly TaskInput[]): Promise<Task[]> {
+    const file = await this.requireBundle().readTaskFile();
+
+    const created = inputs.map((input) => {
+      const task: Task = {
+        id: nextTaskId(file.tasks),
+        title: input.title.trim(),
+        status: input.status ?? "todo",
+        ...(input.para ? { para: input.para } : {}),
+        ...(input.due ? { due: input.due } : {}),
+        ...(input.note ? { note: input.note } : {}),
+      };
+      file.tasks.unshift(task);
+      return task;
+    });
+
+    await this.writeTaskFile(file);
+    return created;
+  }
+
+  /** Write `Task.md`, suppressing the watcher event for our own write. */
+  private async writeTaskFile(file: TaskFile): Promise<void> {
     const bundle = this.requireBundle();
-    const file = await bundle.readTaskFile();
-
-    const task: Task = {
-      id: nextTaskId(file.tasks),
-      title: input.title.trim(),
-      status: input.status ?? "todo",
-      ...(input.para ? { para: input.para } : {}),
-      ...(input.due ? { due: input.due } : {}),
-      ...(input.note ? { note: input.note } : {}),
-    };
-
-    file.tasks.unshift(task);
+    this.markSelfWrite(bundle.paths.toRel(bundle.paths.taskMdPath));
     await bundle.writeTaskFile(file);
-    return task;
   }
 
   /**
@@ -583,7 +714,7 @@ export class Workspace {
     if (changes.status !== undefined && changes.status !== task.status) {
       task.status = changes.status;
       if (changes.status === "done") {
-        task.done = new Date().toISOString().slice(0, 10);
+        task.done = isoDate(new Date());
         file.doneEver += 1;
       } else if (wasDone) {
         delete task.done;
@@ -594,9 +725,17 @@ export class Workspace {
     // Newest completions first, so the kept window holds the recent ones.
     file.tasks.sort((a, b) => (b.done ?? "").localeCompare(a.done ?? ""));
 
-    await bundle.writeTaskFile(file);
+    await this.writeTaskFile(file);
     return task;
   }
+}
+
+export interface TaskInput {
+  title: string;
+  status?: TaskStatus;
+  para?: ParaClass;
+  due?: string;
+  note?: string;
 }
 
 /** Concept id for a bundle-relative path, or `""` for non-concept files. */

@@ -165,4 +165,41 @@ describe("the daily note in a bundle", () => {
     // An agent may call this speculatively; failing would make it unusable.
     expect(await workspace.collectDailyTasks(new Date(2020, 0, 1))).toEqual([]);
   });
+
+  test("a batch allocates distinct ids in one write", async () => {
+    const created = await workspace.addTasks([
+      { title: "一つ目" },
+      { title: "二つ目" },
+      { title: "三つ目" },
+    ]);
+
+    // Ids are allocated against the list as it grows, so a batch written in
+    // one pass cannot collide with itself.
+    expect(new Set(created.map((t) => t.id)).size).toBe(3);
+    expect((await workspace.listTasks()).map((t) => t.title)).toEqual([
+      "三つ目",
+      "二つ目",
+      "一つ目",
+    ]);
+  });
+
+  test("collecting many lines gives each its own id", async () => {
+    const { path } = await workspace.openDaily();
+    const note = await readFile(join(root, path), "utf8");
+    await workspace.writeFile(
+      path,
+      note.replace(
+        DAILY_TASK_HEADING,
+        `${DAILY_TASK_HEADING}\n\n- [ ] 一\n- [ ] 二\n- [ ] 三\n- [ ] 四`
+      )
+    );
+
+    const created = await workspace.collectDailyTasks();
+    expect(created).toHaveLength(4);
+    expect(new Set(created.map((t) => t.id)).size).toBe(4);
+
+    // Every line is stamped with the id it actually became.
+    const after = await readFile(join(root, path), "utf8");
+    for (const task of created) expect(after).toContain(`→ ${task.id}`);
+  });
 });

@@ -1,5 +1,287 @@
 # Changelog
 
+## 0.6.0
+
+### Strata and Unsloth Desktop
+
+Two more local runtimes, each connected both ways it can be:
+
+- **As model servers** for the built-in agent: [Strata](https://github.com/Niko1221/Strata)
+  on `127.0.0.1:8080/v1` and [Unsloth Desktop](https://github.com/unslothai/unsloth)
+  on `127.0.0.1:8888/v1`. Unsloth's API is authenticated, so a target can now
+  name the environment variable its key comes from (`UNSLOTH_API_KEY`,
+  `STRATA_API_KEY`). The key is read per request and written nowhere.
+- **As MCP hosts**, so their own chat can use this bundle. Strata reads a
+  `mcpServers` file through `--mcp-config`; ours is `strata-mcp.json` beside
+  this app's other settings, because Strata's `strata-<model>.json` is setup's
+  to rewrite. Unsloth keeps its servers in SQLite, which is not ours to write,
+  so it gets the snippet for its MCP import — the panel says "paste this JSON"
+  rather than "run this command".
+
+Ports, config shapes and the import format were read from each project's own
+docs and source, not recalled.
+
+### The connections panel no longer opens on an error
+
+Opening it probed Ollama for its models — the first server in the list — on a
+machine without Ollama, and put "Ollama に接続できません" in the status bar
+before anything was pressed. The local run now starts on a server that is
+actually installed, and a server that is not running is explained beside the
+model picker, with its setup note, the raw reason and a retry button. Run stays
+disabled until there is a model and a task, and Enter starts it.
+
+Eighteen rows, most of them "未検出", buried the three that could be used.
+Tools found here, or already configured, come first; the rest fold under
+"未検出のツール（n）".
+
+### Rebuilding the headless server while an agent is using it
+
+`bun run build:headless` refused whenever an agent host had the server open,
+which is nearly always, so the build that agents ran fell behind the source:
+39 tools while the source had 41. Windows will rename a running executable, so
+the build now moves it to `okf-mcp.exe.old` and puts the new one in place.
+Sessions already running keep their copy; the next one gets the new build.
+
+### `mcp-config.json` is no longer in the repository
+
+It is written by setup for the local machine and was already in `.gitignore`,
+but a copy with one machine's paths had been committed.
+
+### Installing and removing it, on every platform
+
+The macOS and Linux install instructions could not be followed. They said to
+run `bun install && bun run setup:unix` — but installing Bun is the first thing
+setup does, so the documented first step required the thing it was there to
+provide. And nothing in a fresh download was executable, so `SETUP.command`
+could not be run at all.
+
+There is now one command per platform, and neither needs anything installed
+first:
+
+```
+SETUP.bat            # Windows
+bash SETUP.command   # macOS / Linux
+```
+
+`bash` rather than `./` because it works no matter how the copy on disk got
+there. Setup also clears macOS's `com.apple.quarantine`, so double-clicking
+works from then on instead of being refused as coming from an unidentified
+developer.
+
+### The release archive was malformed
+
+Two problems, both invisible on the Windows machine that built it, and both
+landing on whoever downloaded it:
+
+- **Paths used backslashes as separators**, which the ZIP spec forbids
+  (4.4.17.1). Info-ZIP's `unzip` prints a warning and recovers; other
+  extractors are entitled to treat the separator as a literal character and
+  drop the whole tree into one flatly-named file. `Compress-Archive` writes
+  them that way, so the archive is now built with `bsdtar`
+  (`%SystemRoot%\System32\tar.exe`, shipped since Windows 10 1803), with
+  `Compress-Archive` kept as the fallback. It has to be named by absolute path:
+  a machine with Git for Windows on `PATH` resolves a bare `tar` to GNU tar,
+  which cannot write a zip and silently produced a tar file with a `.zip` name.
+- **Every entry recorded 0666, and directories 0777.** NTFS has no Unix mode to
+  report, so nothing arrived executable and everything arrived world-writable —
+  the latter only unnoticed because `unzip` applies the umask. The archive's
+  recorded permissions are now normalised outright: 0644 for files, 0755 for
+  directories and for the five scripts that must run. Verified by reading the
+  archive back, because this is the difference between a download that runs and
+  one that does not.
+
+**Uninstalling has an entry point too.** `UNINSTALL.bat` and
+`UNINSTALL.command` sit beside their setup counterparts; previously macOS and
+Linux users had to already know `./PierrotKnowledge2 Uninstall` existed. Both
+still show a plan and delete nothing until re-run with `--apply`, and your
+notes are never in that plan.
+
+`--connect` reached macOS and Linux as well: registering the bundle with every
+agent host found on the machine was a Windows-only switch.
+
+### Three ways this was broken on macOS and Linux specifically
+
+- **Agent hosts launched from the GUI could not start the MCP server.**
+  `setup.sh` hand-wrote `"command": "bun"` into `mcp-config.json`. A GUI-launched
+  app on macOS inherits launchd's `PATH` — `/usr/bin:/bin:/usr/sbin:/sbin` —
+  which never contains `~/.bun/bin`, so the host reported a failed server and
+  said nothing about why. The config now comes from the same `serverSpecFor` the
+  app uses: the compiled headless binary when one exists, an absolute Bun path
+  otherwise. The hand-written copy had drifted from the shared one exactly as an
+  earlier one in `setup.ps1` did.
+- **Every update broke the launcher.** An update extracts the archive over the
+  install, so `./PierrotKnowledge2` came back as 0644 and the next run was
+  "Permission denied" — an update that looked like it had broken the app. The
+  bits are restored as part of applying one, which also covers updating *from*
+  a release built before the archive was fixed.
+- **Uninstall looked for launchers in `~/Desktop` only.** A Japanese GNOME puts
+  the desktop at `~/デスクトップ`, a Spanish one at `~/Escritorio`. Setup asked
+  `xdg-user-dir` and wrote there, so the menu entry it left behind pointed at an
+  application that was gone. Both halves now read the same setting.
+- **The Linux launcher broke on a path containing an apostrophe.** It embedded
+  a compound shell command inside the `.desktop` `Exec` field, so the paths were
+  quoted for the shell and then quoted again for freedesktop's own escaping
+  rules. Setup now writes a real launcher script and every shortcut just runs
+  it; a file has no quoting problem.
+
+### Connecting could delete every other MCP server you had
+
+`--connect` merged into each host's config by parsing it, adding one entry and
+writing it back — and a config that failed to parse was treated as absent, so
+what got written back was a file containing *only* our entry. Every other
+server the user had registered was gone, and the connection reported success.
+
+"Unparseable" is mostly not "corrupt". Several of these hosts accept JSONC, so
+a config with `//` comments or a trailing comma is a **working** config that
+`JSON.parse` rejects — the case where discarding it costs the most. A backup was
+taken, but a user told the connection succeeded has no reason to look for one.
+
+A config that is present and cannot be read now stops that host's connection
+and says so, naming the file. Absent or empty still starts a fresh one, and
+removal was never affected — it writes nothing when it cannot find our entry.
+
+### Uninstall left registrations behind
+
+Three hosts keep their config *inside* the knowledge bundle
+(`<bundle>/.mcp.json`, `<bundle>/.cursor/mcp.json`,
+`<bundle>/.agents/mcp_config.json`), and uninstall asked about only the first
+bundle it knew of. With no saved session it asked about `""`, which made those
+paths *relative* — probed against the install directory, where they do not
+exist — so the real bundle's entries survived an uninstall that reported
+success. That is precisely the "every tool reports a broken MCP server on every
+launch" outcome the uninstaller exists to prevent. Every known bundle is now
+swept, and which hosts are bundle-scoped is derived from the target rather than
+flagged on it, so one added later cannot be missed.
+
+Two smaller ones in the same path: a launcher that is a directory (the
+pre-0.5.0 macOS `.app`, when copied rather than symlinked) threw `EISDIR` and
+turned a clean uninstall into a reported failure; and existence was checked
+with `stat`, which follows symlinks — so the dangling `.app` symlink those
+installs actually have was reported as absent and left on the Desktop.
+
+### `--purge-settings` did nothing
+
+The uninstall help printed it and the handler read `flags.purge_settings`, but
+the parser stored what it was given — `flags["purge-settings"]` — so the flag
+was silently ignored. Flag names now fold hyphens to underscores, the way
+command names already did (`skill-find` → `skill_find`), so both spellings
+work and the two halves of the command line follow one rule.
+
+### Smaller fixes in the same pass
+
+- **`okf write-file --content` no longer discards Markdown.** A value opening
+  with `---` — which is every file with frontmatter — was read as the next
+  flag, leaving `--content` valueless and writing an empty file over what was
+  passed. A flag name has to start with a letter; dashes alone are a value. The
+  `--` terminator counts as a flag for this purpose, or a preceding bare flag
+  eats it and the positional after it is reparsed as a flag.
+- **A failed update no longer strands the files it added.** The undo restored
+  every path it had renamed aside, but a top-level path the archive *introduces*
+  has no backup to restore over it, so it stayed behind in an otherwise
+  rolled-back tree.
+- **`setup.sh` writes `mcp-config.json` via a temp file.** Redirecting onto it
+  truncated the previous good config before the generator had produced a byte,
+  so a failed re-run left an empty file where the config the user was told to
+  copy from used to be.
+- **`--bundle` with no path says so** instead of ending the script silently on
+  a `shift` that ran off the end of the arguments.
+
+### Context packs, sized to the model that reads them
+
+A new `context_pack` MCP tool assembles the minimal set of files for a task:
+relevant passages grouped by file (an agent plans in files, not fragments),
+each file's one-line description, and the skills that match the task — all
+within one character budget. It replaces the read-around at the start of
+substantial work.
+
+The budget follows the consumer. `tier: "worker"` returns a small pack that
+fits a local model's context alongside its instructions; `tier: "supervisor"`
+returns a broader one for a frontier model planning or verifying. Same bundle,
+same rules — only the hand-out differs.
+
+### Provenance that survives several models writing at once
+
+When frontier and local models share one bundle, "who wrote this" stops being
+recoverable by memory. Two additions keep it recoverable by machine:
+
+- **`audit_changes`** parses `log.md` back into entries and groups them by
+  actor — the human, or whichever `process:` wrote — optionally since a date.
+  Hand-written prose rows (which OKF §9 allows) are skipped, not errors.
+- **`write_file` now warns when an agent writes a concept without
+  `generated`** in its frontmatter. The check is a nudge at write time, not a
+  rejection, and does not apply to humans in the editor or to `skills/` and
+  `loops/`, which hold procedures rather than knowledge claims.
+  `create_concept` already stamps `generated.by` and remains the recommended
+  path for new pages.
+
+### AGENTS.md teaches long-running work and model tiers
+
+The scaffold's contract gained a protocol for work that spans sessions —
+orient with `read_map` → `list_tasks` → `read_human`, shape big work as
+loops, journal decisions with `loop_note`, close with `update_task` +
+`loop_end` — and a Supervisor/Worker role split for mixed-model setups:
+workers write drafts (`status: draft`) inside the pack they were handed;
+promotion to `stable` and verification belong to the supervisor or the human.
+
+### Fixes found while building the above
+
+Auditing provenance only works if the record underneath it is right, and
+reviewing that record turned up several places where it was not:
+
+- **`log.md` headings now use the local day, not UTC.** A morning write in JST
+  was filed under yesterday's heading — a different date than the daily note
+  describing the same moment, and one an `audit_changes` date filter would
+  silently skip. Completed-task dates were computed the same wrong way.
+- **Automated changes are tagged `process:`, consistently.** A PARA refile by
+  an agent logged as `agent:local` and a daily-task transfer as bare `agent`,
+  so neither appeared when filtering the audit for agent activity — which is
+  the filter the tool's own description recommends.
+- **A layer root can no longer be deleted.** `delete_file` refused reserved
+  filenames by basename, so deleting `wiki` recursively took `index.md`,
+  `log.md` and every concept with it in one call. The guard compares paths the
+  way containment already did — case-insensitively on Windows and macOS, where
+  `WIKI` and `wiki` are one directory and a `===` check is one an agent steps
+  around by changing the case.
+- **`daily_note` rejects a rolled-over date.** `2026-02-30` passed the format
+  check and `Date` quietly normalised it to March 2nd, writing into the wrong
+  day's note — the exact failure the date validation exists to prevent.
+- **Promotion from outside `raw/` says so**, rather than reporting a file that
+  plainly exists as missing.
+- **Collecting daily tasks writes `Task.md` once**, not once per line, and the
+  writes it and its neighbours make no longer reach the watcher as if they
+  came from another editor.
+- **`context-pack`, `audit-changes` and `list-tags` appear in `okf --help`.**
+  The command list is hand-grouped, so a new tool was dispatchable but
+  invisible; a test now asserts every tool is grouped or explicitly unlisted.
+
+### HTML comes in as HTML
+
+Material arrives as HTML more often than as Markdown — a page fetched over MCP,
+a browser's clipboard, a page saved to disk — and all of it was being flattened
+to Markdown or stored as `.md` full of tags. Both outcomes lose the document:
+one throws away everything Markdown has no syntax for, the other shows the
+markup instead of the page.
+
+`.html` and `.htm` now open in the reading view like Markdown does, and three
+ways in produce them:
+
+- **Dropping files on the window** captures them into `raw/` and opens the
+  first one. Text only — a PDF is reported rather than decoded into
+  replacement characters — and bounded at 8 MB, because the content crosses
+  the RPC socket as one message.
+- **MCP imports** are written as `.html` when the tool returned a page, with a
+  provenance header in HTML rather than Markdown syntax the file would never
+  render. The capture itself is still stored byte-for-byte.
+- **Ctrl+Alt+V** pastes the clipboard's HTML instead of converting it, and is
+  the default when the open file is already HTML.
+
+Captured pages render through the same allowlist as note content, not a
+sandboxed frame: `script`, `style`, `iframe`, `svg` and every unlisted
+attribute are dropped, and links are restricted to `http(s)`, `mailto` and
+internal targets. A page copied into the bundle is third-party code, and this
+webview holds an RPC bridge to a process with full filesystem authority. The
+cost is that a captured page loses its own CSS.
+
 ## 0.5.1
 
 0.5.0 shipped, and then people tried to install it. Everything here comes from

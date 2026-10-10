@@ -50,7 +50,15 @@ import {
   type IndexSection,
 } from "../../shared/okf";
 import { parseConcept } from "./parser";
-import { BundlePaths, RAW_DIR, WIKI_DIR, isContained, toPosix, type Actor } from "./paths";
+import {
+  BundlePaths,
+  RAW_DIR,
+  WIKI_DIR,
+  isContained,
+  samePath,
+  toPosix,
+  type Actor,
+} from "./paths";
 
 async function pathExists(path: string): Promise<boolean> {
   try {
@@ -558,7 +566,8 @@ export class Bundle {
 
     const fromAbs = this.paths.resolve(fromRel);
     if (this.paths.layerOf(this.paths.toRel(fromAbs)) !== "raw") {
-      throw new Error(messages.notFound(fromRel));
+      // A distinct error: the file may well exist — it is just not promotable.
+      throw new Error(messages.promoteOnlyFromRaw(fromRel));
     }
     if (!(await pathExists(fromAbs))) throw new Error(messages.notFound(fromRel));
 
@@ -593,6 +602,15 @@ export class Bundle {
 
     if (isReservedFilename(basenameOf(rel))) {
       throw new Error(messages.reservedCannotDelete(rel));
+    }
+    // The reserved-file check above only sees the basename of the target, so
+    // without this a recursive delete of a layer root would take index.md and
+    // log.md — and everything else — with it in one call. Compared with
+    // `samePath`, not `===`: on Windows and macOS `WIKI` and `wiki` are the
+    // same directory, so a case-sensitive check is one an agent walks around.
+    const roots = [this.paths.root, this.paths.wikiRoot, this.paths.rawRoot, this.paths.ragRoot];
+    if (roots.some((root) => samePath(abs, root))) {
+      throw new Error(messages.layerRootCannotDelete(rel || "."));
     }
     if (!(await pathExists(abs))) throw new Error(messages.notFound(relPath));
 
@@ -795,6 +813,15 @@ export class Bundle {
     }
 
     await writeFile(path, insertLogEntry(existing, entry), "utf8");
+  }
+
+  /** The change log, or an empty one when it has not been written yet. */
+  async readLog(): Promise<string> {
+    try {
+      return await readFile(this.paths.logMdPath, "utf8");
+    } catch {
+      return emptyLogMd();
+    }
   }
 
   async readAgentsMd(): Promise<string | null> {

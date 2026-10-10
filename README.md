@@ -263,13 +263,16 @@ One panel, one page, three sections.
   anything else that speaks the protocol. The tool list and its form are built
   from whatever the server declares, so there is no per-service code. Imports
   land in `raw/`.
-- **Agent hosts** (9) — Claude Code, Codex, opencode, Hermes Agent, Cursor and
-  Antigravity, most offered in both a **bundle-scoped** and a **user-scoped**
+- **Agent hosts** (11) — Claude Code, Codex, opencode, Hermes Agent, Cursor,
+  Antigravity, [Strata](https://github.com/Niko1221/Strata)'s chat and
+  [Unsloth Desktop](https://github.com/unslothai/unsloth), most offered in both a **bundle-scoped** and a **user-scoped**
   form. One entry is added to their own config, after a backup and after
   showing you the diff. Claude Code's user scope is the exception: it lives in
   `~/.claude.json` alongside project state and server toggles, so the app shows
   you the `claude mcp add` command rather than rewriting a file that big to add
-  one line.
+  one line. Unsloth keeps its MCP servers in a database, so it gets an
+  `mcpServers` snippet to paste into its import instead; Strata reads a file of
+  ours through `--mcp-config`.
   **すべてのエージェントに登録** does the whole sweep in one press: every host
   found on the machine, sequentially, with a per-host report of what was
   written, what was already there, and what needs a command you run yourself.
@@ -290,12 +293,17 @@ One panel, one page, three sections.
   found there. For Claude Code that scope lives in `~/.claude.json`, which also
   holds project state — so this app shows you the `claude mcp add` command
   rather than editing that file.
-- **Local model servers** (4) — Ollama, llama.cpp, LM Studio and vLLM are
+- **Local model servers** (6) — Ollama, llama.cpp, LM Studio, vLLM, Strata and
+  Unsloth Desktop are
   *not* MCP clients; they emit tool calls with nothing to execute them, so this
   app runs the agent loop itself with the token spend shown as it happens.
   Ports and required flags come from each vendor own docs — vLLM in particular
   ignores every tool unless started with both `--enable-auto-tool-choice` and
-  `--tool-call-parser`.
+  `--tool-call-parser`. Unsloth's API is authenticated: its `sk-unsloth-…` key
+  is read from `UNSLOTH_API_KEY` (Strata's, when it has one, from
+  `STRATA_API_KEY`) and never written to a file. The panel opens on a server
+  that is actually installed, and one that is not running says so beside the
+  model picker instead of raising an error.
 
 Credentials are never typed into this app.
 
@@ -402,4 +410,3 @@ MIT. See [LICENSE](LICENSE).
 | [Benchmark](docs/BENCHMARK.md) | Method and raw data |
 | [Conformance](docs/CONFORMANCE.md) | OKF audit, clause by clause |
 | [Architecture](docs/ARCHITECTURE.md) | How the code fits together |
- the code fits together |

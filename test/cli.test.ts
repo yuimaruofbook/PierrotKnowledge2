@@ -32,9 +32,38 @@ import {
   windowTarget,
 } from "../src/bun/cli/rmux";
 import { TOOLS } from "../src/bun/mcp/tools";
-import { run } from "../src/bun/cli/main";
+import { COMMAND_GROUPS, UNLISTED_TOOLS, run } from "../src/bun/cli/main";
 import { Workspace } from "../src/bun/workspace";
 import { removeTempDir } from "./helpers";
+
+describe("the command list", () => {
+  // The groups are hand-ordered, so a tool added to the MCP table is
+  // dispatchable but invisible until it is listed. That gap is silent: the
+  // command works, and nobody discovers it. These two assertions close it.
+  test("every tool is either grouped or explicitly unlisted", () => {
+    const listed = new Set(COMMAND_GROUPS.flatMap(([, names]) => names));
+    const missing = TOOLS.map((tool) => tool.name).filter(
+      (name) => !listed.has(name) && !UNLISTED_TOOLS.includes(name)
+    );
+    expect(missing).toEqual([]);
+  });
+
+  test("no group names a tool that does not exist", () => {
+    const known = new Set(TOOLS.map((tool) => tool.name));
+    const stale = [...COMMAND_GROUPS.flatMap(([, names]) => names), ...UNLISTED_TOOLS].filter(
+      (name) => !known.has(name)
+    );
+    expect(stale).toEqual([]);
+  });
+
+  test("a tool is listed in exactly one group", () => {
+    const seen = new Map<string, number>();
+    for (const [, names] of COMMAND_GROUPS) {
+      for (const name of names) seen.set(name, (seen.get(name) ?? 0) + 1);
+    }
+    expect([...seen.entries()].filter(([, count]) => count > 1)).toEqual([]);
+  });
+});
 
 describe("argument parsing", () => {
   test("splits positionals from flags", () => {
@@ -46,6 +75,41 @@ describe("argument parsing", () => {
 
   test("accepts --key=value", () => {
     expect(parseArgv(["--budget_chars=6000"]).flags.budget_chars).toBe("6000");
+  });
+
+  test("a value that opens with dashes is a value, not the next flag", () => {
+    // Markdown frontmatter starts `---`. Reading it as a flag left --content
+    // valueless, and write-file then wrote an empty file over what was passed.
+    const body = "---\ntype: Note\n---\n\nbody\n";
+    const parsed = parseArgv(["write-file", "--path", "wiki/a.md", "--content", body]);
+
+    expect(parsed.flags.content).toBe(body);
+    expect(parsed.flags.path).toBe("wiki/a.md");
+  });
+
+  test("a real flag still terminates the one before it", () => {
+    const parsed = parseArgv(["--json", "--limit", "5"]);
+    expect(parsed.flags.json).toBe(true);
+    expect(parsed.flags.limit).toBe("5");
+  });
+
+  test("a bare flag does not swallow the -- terminator", () => {
+    // `--quiet` used to consume `--`, which both lost the terminator and let
+    // the positional after it be reparsed as a flag — the query vanished.
+    const parsed = parseArgv(["search", "--quiet", "--", "--設計"]);
+
+    expect(parsed.flags.quiet).toBe(true);
+    expect(parsed.positional).toEqual(["search", "--設計"]);
+    expect(parsed.flags["設計"]).toBeUndefined();
+  });
+
+  test("a hyphenated flag reaches the code under its underscore name", () => {
+    // `--purge-settings` is the spelling the uninstall help prints, but the
+    // handler reads flags.purge_settings — so without folding, the documented
+    // flag silently did nothing.
+    expect(parseArgv(["--purge-settings"]).flags.purge_settings).toBe(true);
+    expect(parseArgv(["--purge_settings"]).flags.purge_settings).toBe(true);
+    expect(parseArgv(["--path-prefix=wiki/"]).flags.path_prefix).toBe("wiki/");
   });
 
   test("a bare flag is true", () => {

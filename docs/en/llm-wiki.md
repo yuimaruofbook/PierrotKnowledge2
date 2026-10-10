@@ -101,8 +101,8 @@ This app chose **BM25 (SQLite FTS5)** rather than embeddings because:
 | Canonical | In this app |
 |-----------|-------------|
 | **Ingest** | Drop sources in `raw/` → agent reads with `read_file`, writes with `create_concept` → `rebuild_index` |
-| **Query** | `retrieve` (citation anchors, character budget) / `search` (locate a page) / `Ctrl+K` in the UI |
-| **Lint** | `check_conformance` (OKF violations) / `unresolved_links` (knowledge gaps) / non-conformance count in the status bar |
+| **Query** | `retrieve` (citation anchors, character budget) / `context_pack` (the minimal file set to start a task) / `search` (locate a page) / `Ctrl+K` in the UI |
+| **Lint** | `check_conformance` (OKF violations) / `unresolved_links` (knowledge gaps) / `audit_changes` (who changed what) / non-conformance count in the status bar |
 
 ---
 

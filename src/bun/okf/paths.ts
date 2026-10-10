@@ -63,6 +63,18 @@ export function toPosix(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
 }
 
+/**
+ * True when two paths name the same file.
+ *
+ * Shares `comparable` with `isContained` for the same reason: on Windows and
+ * macOS `WIKI` and `wiki` are one directory, and a `===` comparison would say
+ * otherwise — which turns any guard built on it into one an agent can step
+ * around by changing the case of a path.
+ */
+export function samePath(a: string, b: string): boolean {
+  return comparable(resolve(a)) === comparable(resolve(b));
+}
+
 /** True when `child` is `parent` itself or lives beneath it. */
 export function isContained(parent: string, child: string): boolean {
   const p = comparable(resolve(parent));

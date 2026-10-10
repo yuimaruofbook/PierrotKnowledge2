@@ -97,17 +97,57 @@ function resolveTool(name: string): ToolDefinition | undefined {
   return TOOLS.find((tool) => tool.name === wanted);
 }
 
+/**
+ * How the command list is grouped in `--help`.
+ *
+ * Hand-ordered rather than derived, because the useful order is by what you
+ * are trying to do, which the tool definitions do not encode. The cost is that
+ * a new tool is dispatchable but invisible until it is listed here, so a test
+ * asserts every tool appears in exactly one group.
+ */
+export const COMMAND_GROUPS: ReadonlyArray<readonly [string, readonly string[]]> = [
+  [
+    "知識を読む",
+    [
+      "retrieve",
+      "context_pack",
+      "search",
+      "read_file",
+      "list_concepts",
+      "list_tags",
+      "backlinks",
+    ],
+  ],
+  ["知識を書く", ["create_concept", "write_file", "move_file", "delete_file"]],
+  ["方向づけ", ["read_map", "read_human", "list_tasks", "add_task", "update_task"]],
+  ["デイリーノート", ["daily_note", "collect_daily_tasks"]],
+  ["PARA", ["list_para", "set_para"]],
+  ["スキル", ["skill_find", "skill_list", "skill_open", "skill_read"]],
+  ["ループ", ["loop_list", "loop_start", "loop_note", "loop_end", "loop_read"]],
+  [
+    "点検",
+    ["check_conformance", "audit_changes", "unresolved_links", "rebuild_index", "rebuild_rag"],
+  ],
+];
+
+/**
+ * Tools deliberately kept out of `--help`.
+ *
+ * Not omissions: these three are either implied by `--bundle` or are plumbing
+ * the CLI already exposes under a friendlier name.
+ */
+export const UNLISTED_TOOLS: readonly string[] = [
+  "open_bundle", // `--bundle` does this on every command
+  "bundle_info", // surfaced as `info`
+  "list_files", // surfaced as `ls`
+  "read_agents_md", // surfaced as `agents`
+  "write_human", // human.md is edited in the UI, not by flag
+  "loop_define", // `loop-start --goal` defines on the spot
+  "create_directory", // write-file creates parent directories on its own
+];
+
 function usage(): string {
-  const groups: Array<[string, string[]]> = [
-    ["知識を読む", ["retrieve", "search", "read_file", "list_concepts", "backlinks"]],
-    ["知識を書く", ["create_concept", "write_file", "move_file", "delete_file"]],
-    ["方向づけ", ["read_map", "read_human", "list_tasks", "add_task", "update_task"]],
-    ["デイリーノート", ["daily_note", "collect_daily_tasks"]],
-    ["PARA", ["list_para", "set_para"]],
-    ["スキル", ["skill_find", "skill_list", "skill_open", "skill_read"]],
-    ["ループ", ["loop_list", "loop_start", "loop_note", "loop_end", "loop_read"]],
-    ["点検", ["check_conformance", "unresolved_links", "rebuild_index", "rebuild_rag"]],
-  ];
+  const groups = COMMAND_GROUPS;
 
   const lines = [
     `okf — ${APP_NAME} のコマンドライン`,

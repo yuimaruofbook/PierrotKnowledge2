@@ -11,7 +11,13 @@ import { mkdir, mkdtemp, readFile, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { Bundle } from "../src/bun/okf/bundle";
-import { Connections, importPathFor, toFileName, wrapImported } from "../src/bun/connections";
+import {
+  Connections,
+  importFormatFor,
+  importPathFor,
+  toFileName,
+  wrapImported,
+} from "../src/bun/connections";
 import { registryPath, saveServers, SERVER_PRESETS } from "../src/bun/mcp/registry";
 import { VAULT_PLACEHOLDER } from "../src/shared/mcp-types";
 import { removeTempDir } from "./helpers";
@@ -40,6 +46,24 @@ describe("naming captured sources", () => {
     const path = importPathFor("notion", "設計メモ", new Date("2026-08-01T09:00:00Z"));
     expect(path).toBe("raw/notion/2026-08-01-設計メモ.md");
   });
+
+  test("a captured page is named as one", () => {
+    // The extension is what decides how the file is read back and shown, so it
+    // has to match what was actually captured.
+    const path = importPathFor("fetch", "記事", new Date("2026-08-01T09:00:00Z"), "html");
+    expect(path).toBe("raw/fetch/2026-08-01-記事.html");
+  });
+});
+
+describe("choosing the capture format", () => {
+  test("a page is captured as HTML", () => {
+    expect(importFormatFor("<!DOCTYPE html><html><body><p>本文</p></body></html>")).toBe("html");
+  });
+
+  test("Markdown and prose stay Markdown", () => {
+    expect(importFormatFor("# 見出し\n\n本文です。")).toBe("markdown");
+    expect(importFormatFor("ただの文章です。")).toBe("markdown");
+  });
 });
 
 describe("provenance header", () => {
@@ -58,6 +82,56 @@ describe("provenance header", () => {
     expect(out).toContain("`fetch`");
     expect(out).toContain("2026-08-01T09:00:00.000Z");
     expect(out).toContain("本文です。");
+  });
+
+  test("an HTML capture gets an HTML header, not Markdown syntax", () => {
+    const out = wrapImported({
+      title: "記事",
+      serverLabel: "Fetch",
+      tool: "fetch",
+      args: { url: "https://example.com" },
+      body: "<!DOCTYPE html><html><body><p>本文</p></body></html>",
+      now: new Date("2026-08-01T09:00:00Z"),
+      format: "html",
+    });
+
+    // A `# 見出し` written into an .html file is literal text on screen.
+    expect(out).not.toContain("# 記事");
+    expect(out).toContain("<h1>記事</h1>");
+    expect(out).toContain("取り込み元: Fetch");
+    expect(out).toContain("2026-08-01T09:00:00.000Z");
+    // The capture itself is kept byte-for-byte.
+    expect(out).toContain("<!DOCTYPE html><html><body><p>本文</p></body></html>");
+  });
+
+  test("the header starts the document, so it is read in standards mode", () => {
+    const out = wrapImported({
+      title: "記事",
+      serverLabel: "Fetch",
+      tool: "fetch",
+      args: {},
+      body: "<html><body>x</body></html>",
+      format: "html",
+    });
+
+    expect(out.trimStart().toLowerCase().startsWith("<!doctype html>")).toBe(true);
+  });
+
+  test("a hostile title cannot break out of the header", () => {
+    // The title comes from the remote server or from whatever the page was
+    // called; writing it into markup unescaped is how a capture becomes script.
+    const out = wrapImported({
+      title: '<img src=x onerror="alert(1)">',
+      serverLabel: '</blockquote><script>alert(2)</script>',
+      tool: "fetch",
+      args: { url: "javascript:alert(3)" },
+      body: "<p>本文</p>",
+      format: "html",
+    });
+
+    expect(out).not.toContain("<img src=x");
+    expect(out).not.toContain("<script>");
+    expect(out).toContain("&lt;img src=x");
   });
 });
 

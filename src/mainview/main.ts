@@ -5,7 +5,9 @@
  * `markdown.ts`, and all knowledge of the filesystem on the Bun side.
  */
 
-import type { ConceptSummary } from "../shared/rpc-schema";
+import type { CapturedFile, ConceptSummary } from "../shared/rpc-schema";
+import { MAX_CAPTURE_BYTES } from "../shared/okf/capture";
+import { looksBinary } from "../shared/binary";
 import type { BundleInfo, FileNode, TagCount } from "../shared/types";
 import { initialViewMode } from "../shared/view-mode";
 import { messages as messagesText } from "../shared/messages";
@@ -150,8 +152,13 @@ const editor = new Editor({
   onOpenExternal: (url) => void rpc.request.openExternal({ url }).catch(reportError),
   onOpenConcept: (id) => void openFile(pathOfConceptId(id)),
   onCreateMissing: (target) => void createConcept(target),
-  onPaste: (from) => {
-    if (from === "html") setStatus(messagesText.pastedAsMarkdown);
+  onPaste: (decision) => {
+    // Only worth saying when the clipboard's HTML flavour was used: a plain
+    // paste behaved exactly as the user expected and needs no explanation.
+    if (decision.from !== "html") return;
+    setStatus(
+      decision.format === "html" ? messagesText.pastedAsHtml : messagesText.pastedAsMarkdown
+    );
   },
   onSelectionChange: (active) => showActiveFormats(active),
 });
@@ -644,6 +651,73 @@ async function deleteNode(node: FileNode): Promise<void> {
   }
 }
 
+// ---- capturing dropped files ----
+
+/**
+ * Whether a drag carries files from outside, rather than a tree node being
+ * moved inside the bundle (which advertises `text/okf-path` instead).
+ */
+function hasExternalFiles(transfer: DataTransfer | null): boolean {
+  return Array.from(transfer?.types ?? []).includes("Files");
+}
+
+/**
+ * Capture files dropped onto the window into `raw/`.
+ *
+ * Text only, and read here rather than by path: the page is served over a
+ * socket and never sees the dropped file's location, which is also why nothing
+ * is imported by reference — what lands in `raw/` is a copy, taken once.
+ *
+ * A file that is not text is reported rather than mangled. Decoding a PDF's
+ * bytes as UTF-8 would store a screen of replacement characters under a name
+ * that promises the document.
+ */
+async function captureDropped(files: File[]): Promise<void> {
+  const captured: CapturedFile[] = [];
+  const skipped: string[] = [];
+
+  for (const file of files) {
+    if (file.size > MAX_CAPTURE_BYTES) {
+      setStatus(messagesText.captureTooLarge(file.name, MAX_CAPTURE_BYTES), "error");
+      skipped.push(file.name);
+      continue;
+    }
+
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (looksBinary(bytes)) {
+      skipped.push(file.name);
+      continue;
+    }
+
+    captured.push({ name: file.name, content: new TextDecoder().decode(bytes) });
+  }
+
+  if (captured.length === 0) {
+    setStatus(
+      skipped.length ? messagesText.captureNotText(skipped.join(", ")) : messagesText.captureNothing,
+      "error"
+    );
+    return;
+  }
+
+  try {
+    const { paths } = await rpc.request.captureFiles({ files: captured });
+    await Promise.all([tree.refresh(), refreshConcepts()]);
+
+    // Open what was just captured: a file that lands somewhere unseen is
+    // indistinguishable from a drop that did nothing.
+    if (paths[0]) await openFile(paths[0]);
+
+    const done = messagesText.capturedFiles(paths);
+    setStatus(
+      skipped.length ? `${done} / ${messagesText.captureNotText(skipped.join(", "))}` : done,
+      skipped.length ? "error" : "info"
+    );
+  } catch (error) {
+    reportError(error);
+  }
+}
+
 // ---- palette ----
 
 async function openQuickSwitcher(): Promise<void> {
@@ -902,6 +976,35 @@ window.addEventListener("keydown", (event) => {
     event.preventDefault();
     void openBundle();
   }
+});
+
+/**
+ * Dropping files onto the window captures them.
+ *
+ * Registered on the window rather than on a drop zone: without a handler the
+ * browser navigates away to the dropped file, replacing the app with it — so
+ * the events have to be caught everywhere, not only where a target is drawn.
+ */
+window.addEventListener("dragover", (event) => {
+  if (!hasExternalFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+  document.body.classList.add("capturing");
+});
+
+window.addEventListener("dragleave", (event) => {
+  // Only the drag leaving the window counts; moving between elements inside it
+  // fires this constantly.
+  if (event.relatedTarget === null) document.body.classList.remove("capturing");
+});
+
+window.addEventListener("drop", (event) => {
+  if (!hasExternalFiles(event.dataTransfer)) return;
+  event.preventDefault();
+  document.body.classList.remove("capturing");
+
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  if (files.length) void captureDropped(files);
 });
 
 // Autosave makes an unsaved-work prompt mostly redundant, but a crash during

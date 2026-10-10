@@ -11,8 +11,10 @@ import { messages } from "../../shared/messages";
 import { PARA_LABELS, PARA_ORDER, paraOf, parseParaClass } from "../../shared/okf/para";
 import type { Task, TaskStatus } from "../../shared/okf/workspace-files";
 import type { Workspace } from "../workspace";
+import { isConceptPath, splitFrontmatter } from "../../shared/okf";
 import { skeletonConcept } from "../okf/parser";
 import { formatRetrieval } from "../rag/retrieve";
+import { formatContextPack, type ContextTier } from "../rag/context-pack";
 
 export interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -204,6 +206,31 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
   },
   {
+    name: "context_pack",
+    title: "Build a context pack",
+    description:
+      "Assemble the MINIMAL set of files needed to start a task — relevant passages grouped by file, each file's one-line description, and the skills that match the task — within a character budget. Call this at the START of substantial work instead of reading files one by one. tier='worker' returns a small pack for a cheap or local model doing delegated work; tier='supervisor' returns a broader pack for a frontier model planning or verifying. Omit tier for a middle default.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "What the work is, in natural language" },
+        tier: {
+          type: "string",
+          description: "worker | supervisor — sizes the pack to the consuming model",
+        },
+        budget_chars: {
+          type: "number",
+          description: "Character budget across all passages (overrides the tier default)",
+        },
+        limit: { type: "number", description: "Maximum passages before grouping" },
+        type: { type: "string", description: "Restrict to one OKF type" },
+        tags: { type: "array", items: { type: "string" }, description: "Require all these tags" },
+        path_prefix: { type: "string", description: "Restrict to a bundle-relative path prefix" },
+      },
+      required: ["task"],
+    },
+  },
+  {
     name: "search",
     title: "Search",
     description:
@@ -346,6 +373,22 @@ export const TOOLS: readonly ToolDefinition[] = [
     description:
       "Report every document that violates OKF v0.2 §11 — missing frontmatter, missing 'type', or frontmatter on a reserved file.",
     inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "audit_changes",
+    title: "Audit changes",
+    description:
+      "Group log.md rows by actor to see who — the human, or which model — changed what, optionally since an ISO date. Use it to review agent-written changes before trusting them, and after several models have worked on the same bundle. Rows are returned newest first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO date; only rows on or after it" },
+        actor: {
+          type: "string",
+          description: "Substring filter on the actor, e.g. 'process:' for all agents",
+        },
+      },
+    },
   },
   {
     name: "rebuild_index",
@@ -559,7 +602,10 @@ function parseDate(value: string): Date | undefined | null {
   // Greenwich.
   const [y, m, d] = value.trim().split("-").map(Number) as [number, number, number];
   const date = new Date(y, m - 1, d);
-  return Number.isNaN(date.getTime()) ? null : date;
+  // The constructor normalises overflow (2026-02-30 → March 2nd) instead of
+  // failing; comparing the components back catches exactly that.
+  if (date.getFullYear() !== y || date.getMonth() !== m - 1 || date.getDate() !== d) return null;
+  return date;
 }
 
 const TASK_STATUSES: readonly TaskStatus[] = ["doing", "todo", "done"];
@@ -578,6 +624,17 @@ function describeTask(task: Task): string {
   if (task.done) parts.push(`完了 ${task.done}`);
   if (task.note) parts.push(task.note);
   return parts.join(" · ");
+}
+
+/**
+ * Whether a concept document records who generated it.
+ *
+ * Cheap on purpose: a top-level `generated:` key in the frontmatter is taken
+ * at its word. The point is a nudge on every agent write, not a validation.
+ */
+function lacksProvenance(content: string): boolean {
+  const { yaml } = splitFrontmatter(content);
+  return yaml === null || !/^generated[ \t]*:/m.test(yaml);
 }
 
 /** Pull the shared search/retrieve filters out of a tool argument object. */
@@ -733,6 +790,24 @@ export async function callTool(
         return text(formatRetrieval(result));
       }
 
+      case "context_pack": {
+        const task = str(args, "task");
+        if (!task.trim()) return fail("'task' is required");
+
+        const tier = str(args, "tier");
+        if (tier && tier !== "worker" && tier !== "supervisor") {
+          return fail(`tier must be 'worker' or 'supervisor': ${tier}`);
+        }
+
+        const pack = await workspace.contextPack(task, {
+          ...(tier ? { tier: tier as ContextTier } : {}),
+          ...(typeof args.budget_chars === "number" ? { budgetChars: args.budget_chars } : {}),
+          ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+          ...filtersFrom(args),
+        });
+        return text(formatContextPack(pack));
+      }
+
       case "search": {
         const query = str(args, "query");
         if (!query) return fail("'query' is required");
@@ -818,13 +893,28 @@ export async function callTool(
       case "write_file": {
         const path = str(args, "path");
         if (!path) return fail("'path' is required");
-        const result = await workspace.writeFile(path, str(args, "content"), {
+        const content = str(args, "content");
+        const result = await workspace.writeFile(path, content, {
           by: "agent",
           actor: str(args, "actor") || "process:mcp",
           note: str(args, "note"),
         });
-        if (result.warnings.length) {
-          return text(`Wrote ${path}\nOKF warnings: ${result.warnings.join("; ")}`);
+
+        // Conformance was checked as part of the write; provenance is checked
+        // here because it is a rule for agents, not for the file format — a
+        // human editing in the UI is not held to it. skills/ and loops/ hold
+        // procedures and journals, not knowledge claims, so they are exempt.
+        const warnings = [...result.warnings];
+        if (
+          isConceptPath(path) &&
+          !workspace.requireBundle().paths.isSubsystemPath(path) &&
+          lacksProvenance(content)
+        ) {
+          warnings.push(messages.missingProvenance);
+        }
+
+        if (warnings.length) {
+          return text(`Wrote ${path}\nOKF warnings: ${warnings.join("; ")}`);
         }
         return text(`Wrote ${path}`);
       }
@@ -861,6 +951,20 @@ export async function callTool(
       case "check_conformance": {
         const issues = workspace.conformanceIssues();
         return issues.length === 0 ? text("All documents conform to OKF v0.2.") : json(issues);
+      }
+
+      case "audit_changes": {
+        const since = str(args, "since");
+        if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since.trim())) {
+          return fail(`since must be an ISO date: ${since}`);
+        }
+
+        const result = await workspace.auditChanges({
+          ...(since ? { since: since.trim() } : {}),
+          ...(str(args, "actor") ? { actor: str(args, "actor") } : {}),
+        });
+        if (result.total === 0) return text(messages.auditNoChanges);
+        return json(result);
       }
 
       case "rebuild_index": {

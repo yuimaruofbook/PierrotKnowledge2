@@ -18,6 +18,8 @@
 
 import { mkdir, rm, cp, writeFile } from "fs/promises";
 import { join, resolve } from "path";
+import { EXECUTABLE_PATHS } from "../src/bun/update";
+import { normalizeZipPermissions, readZipPermissions } from "./zip-permissions";
 
 const ROOT = resolve(import.meta.dir, "..");
 
@@ -45,6 +47,8 @@ const INCLUDE = [
   "LICENSE",
   "SETUP.bat",
   "SETUP.command",
+  "UNINSTALL.bat",
+  "UNINSTALL.command",
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
   ".gitignore",
@@ -107,20 +111,91 @@ if (version !== pkg.version) {
 const archive = join(dist, `${name}.zip`);
 await rm(archive, { force: true });
 
-const command =
+/**
+ * How to build the zip, best first.
+ *
+ * `bsdtar` leads on Windows because `Compress-Archive` writes **backslashes**
+ * as path separators, which the ZIP spec forbids (4.4.17.1: paths use forward
+ * slashes). Info-ZIP's `unzip` warns and recovers, but what any other extractor
+ * does with it is its own business — some treat the separator as a literal
+ * character and drop the whole tree into one flatly-named file. That is the
+ * archive macOS and Linux users download, so it should not be malformed.
+ *
+ * `tar.exe` is bsdtar and has shipped in System32 since Windows 10 1803;
+ * `Compress-Archive` stays as the fallback for anything older.
+ *
+ * Named by absolute path, not as `tar`: a developer machine with Git for
+ * Windows on PATH resolves that to GNU tar, which cannot write a zip at all —
+ * it silently produced a tar file with a .zip name until this was pinned.
+ */
+const windowsBsdtar = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
+
+const candidates: string[][] =
   process.platform === "win32"
     ? [
-        "powershell",
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `Compress-Archive -Path '${staging.replace(/'/g, "''")}' -DestinationPath '${archive.replace(/'/g, "''")}' -Force`,
+        [windowsBsdtar, "-a", "-cf", archive, name],
+        [
+          "powershell",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `Compress-Archive -Path '${staging.replace(/'/g, "''")}' -DestinationPath '${archive.replace(/'/g, "''")}' -Force`,
+        ],
       ]
-    : ["zip", "-qr", archive, name];
+    : [
+        ["zip", "-qr", archive, name],
+        ["tar", "-a", "-cf", archive, name],
+      ];
 
-const proc = Bun.spawn(command, { cwd: dist, stdout: "pipe", stderr: "pipe" });
-if ((await proc.exited) !== 0) {
-  console.error(await new Response(proc.stderr).text());
+let archived = false;
+const problems: string[] = [];
+
+for (const command of candidates) {
+  try {
+    const proc = Bun.spawn(command, { cwd: dist, stdout: "pipe", stderr: "pipe" });
+    if ((await proc.exited) === 0) {
+      archived = true;
+      break;
+    }
+    problems.push(`${command[0]}: ${(await new Response(proc.stderr).text()).trim()}`);
+  } catch {
+    problems.push(`${command[0]}: 見つかりません`);
+  }
+}
+
+if (!archived) {
+  console.error(`アーカイブを作成できませんでした:\n${problems.map((p) => `  ${p}`).join("\n")}`);
+  process.exit(1);
+}
+
+/**
+ * Files that have to arrive executable on macOS and Linux.
+ *
+ * The same list the updater restores after replacing them, imported rather
+ * than repeated: a file added to one and not the other is a launcher that
+ * works on a fresh install and breaks on the next update, or the reverse.
+ */
+const EXECUTABLE: readonly string[] = EXECUTABLE_PATHS;
+
+// Built on Windows there is no Unix mode to record, so every entry would
+// arrive unrunnable and world-writable. See scripts/zip-permissions.ts.
+const zipBytes = new Uint8Array(await Bun.file(archive).arrayBuffer());
+const stamped = normalizeZipPermissions(zipBytes, EXECUTABLE);
+
+if (!stamped) {
+  console.error("zip の中央ディレクトリを読めませんでした。実行権限を付与できません。");
+  process.exit(1);
+}
+
+await Bun.write(archive, zipBytes);
+
+// Read it back rather than trusting the write: this is the difference between
+// a download that runs and one that does not.
+const recorded = readZipPermissions(new Uint8Array(await Bun.file(archive).arrayBuffer())) ?? [];
+const modes = new Map(recorded.map((entry) => [entry.path, entry.mode]));
+const missing = EXECUTABLE.filter((name) => ((modes.get(name) ?? 0) & 0o111) === 0);
+if (missing.length > 0) {
+  console.error(`実行権限を付与できなかったファイルがあります: ${missing.join(", ")}`);
   process.exit(1);
 }
 

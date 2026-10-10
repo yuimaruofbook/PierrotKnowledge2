@@ -24,7 +24,7 @@
  */
 
 import { createHash } from "crypto";
-import { cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "fs/promises";
 import { join, resolve } from "path";
 import {
   checkSafeToUpdate,
@@ -71,9 +71,60 @@ export const REPLACED_PATHS = [
   "LICENSE",
   "SETUP.bat",
   "SETUP.command",
+  "UNINSTALL.bat",
+  "UNINSTALL.command",
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
 ] as const;
+
+/**
+ * Files that have to be executable to be usable, relative to the install root.
+ *
+ * Named in one place because two things restore them: setup, and every update.
+ * The release archive is built on Windows with `Compress-Archive`, which does
+ * not record Unix permissions — everything arrives 0644 — so on macOS and Linux
+ * the launcher a user is told to run is not runnable until something sets the
+ * bit back.
+ */
+export const EXECUTABLE_PATHS = [
+  "PierrotKnowledge2",
+  "SETUP.command",
+  "UNINSTALL.command",
+  // Forward slashes on purpose: `join` normalises them for the filesystem, and
+  // `scripts/release.ts` matches them against ZIP entry names, which are
+  // forward-slash by spec. One list, both uses.
+  "scripts/setup.sh",
+  "scripts/uninstall.sh",
+] as const;
+
+/**
+ * Restore the executable bit on the files that need one.
+ *
+ * A no-op on Windows, where the concept does not exist and `chmod` is ignored.
+ * Missing files are skipped rather than reported: the set spans releases, and
+ * an install that predates `UNINSTALL.command` is still a valid install.
+ */
+export async function restoreExecutableBits(installDir: string): Promise<string[]> {
+  if (process.platform === "win32") return [];
+
+  const restored: string[] = [];
+  for (const rel of EXECUTABLE_PATHS) {
+    const path = join(installDir, rel);
+    try {
+      const info = await stat(path);
+      // Mirror the read bits into execute, so a file readable by the group is
+      // runnable by it — the same shape `chmod +x` produces.
+      const mode = info.mode & 0o777;
+      const next = mode | ((mode & 0o444) >> 2);
+      if (next === mode) continue;
+      await chmod(path, next);
+      restored.push(rel);
+    } catch {
+      // Not in this release, or not ours to change.
+    }
+  }
+  return restored;
+}
 
 /**
  * Compiled artefacts that an update has just made stale.
@@ -384,6 +435,11 @@ export async function applyUpdate(options: {
 
   const replaced: string[] = [];
   const done: Array<{ name: string; from: string }> = [];
+  // Every path this wrote, whether or not something was there before. The undo
+  // below has to remove these as well: a newly added top-level file has no
+  // backup to restore over it, so restoring only the renamed ones left the new
+  // release's file sitting in a tree that is otherwise the old release.
+  const created: string[] = [];
 
   try {
     for (const name of REPLACED_PATHS) {
@@ -397,13 +453,22 @@ export async function applyUpdate(options: {
       }
 
       await cp(incoming, current, { recursive: true });
+      created.push(current);
       replaced.push(name);
     }
+
+    // The archive carries no Unix permissions, so the launcher we just replaced
+    // is 0644 and the user's next `./PierrotKnowledge2` is "Permission denied"
+    // — an update that appears to have broken the app.
+    await restoreExecutableBits(options.installDir);
   } catch (error) {
     // Put back whatever was moved before the failure, so a half-applied
-    // update never survives.
+    // update never survives. Anything this run created is removed first,
+    // including the paths that had no previous version to restore over.
+    for (const path of created.reverse()) {
+      await rm(path, { recursive: true, force: true }).catch(() => {});
+    }
     for (const { name, from } of done.reverse()) {
-      await rm(from, { recursive: true, force: true }).catch(() => {});
       await rename(join(backupDir, name), from).catch(() => {});
     }
     throw error;

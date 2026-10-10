@@ -10,7 +10,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync } from "fs";
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from "fs/promises";
 import { tmpdir } from "os";
-import { dirname, join, resolve } from "path";
+import { dirname, isAbsolute, join, resolve } from "path";
 import {
   mergeCodexToml,
   mergeHermesYaml,
@@ -20,6 +20,7 @@ import {
 } from "../src/bun/connect/merge";
 import {
   CONNECT_TARGETS,
+  bunCommand,
   findTarget,
   headlessBinaryPath,
   serverSpecFor,
@@ -66,10 +67,16 @@ describe("Claude Code (.mcp.json)", () => {
     expect(Object.keys(JSON.parse(twice).mcpServers)).toEqual(["okf-wiki"]);
   });
 
-  test("a corrupt file does not stop the connection", () => {
-    // The caller holds a backup; refusing here would leave the user with a
-    // broken config and no server.
-    expect(JSON.parse(mergeMcpJson("{not json", "okf-wiki", SERVER)).mcpServers["okf-wiki"]).toBeTruthy();
+  test("a file we cannot read stops the connection instead of replacing it", () => {
+    // This used to merge anyway, on the reasoning that a backup exists and
+    // refusing leaves the user with a broken config and no server. The trade
+    // turned out to be the wrong way round: "unparseable" is mostly not
+    // "corrupt" — several of these hosts accept JSONC, so a config with `//`
+    // comments is a *working* one that JSON.parse rejects — and the write
+    // replaced it with a file holding only our entry, silently deleting every
+    // other server the user had while reporting success. Not connecting is
+    // recoverable in a way that is not.
+    expect(() => mergeMcpJson("{not json", "okf-wiki", SERVER)).toThrow(/失われる/);
   });
 });
 
@@ -237,6 +244,10 @@ describe("the target catalogue", () => {
       "lmstudio",
       "ollama",
       "opencode",
+      "strata",
+      "strata-mcp",
+      "unsloth",
+      "unsloth-mcp",
       "vllm",
     ]);
   });
@@ -251,7 +262,7 @@ describe("the target catalogue", () => {
     expect(target.format).toBeUndefined();
     expect(target.setupCommand).toBeDefined();
 
-    const command = target.setupCommand!("C:/notes", "okf-mcp.exe");
+    const command = target.setupCommand!("C:/notes", "okf-mcp.exe", SERVER);
     expect(command).toContain("--scope user");
     expect(command).toContain("OKF_BUNDLE=");
   });
@@ -259,7 +270,8 @@ describe("the target catalogue", () => {
   test("a bundle path with spaces is quoted in the command", () => {
     const command = findTarget("claude-code-user").setupCommand!(
       "C:/Users/me/My Notes",
-      "okf-mcp.exe"
+      "okf-mcp.exe",
+      SERVER
     );
     // Unquoted, the shell would split it and the server would open the wrong
     // folder — or none at all.
@@ -312,6 +324,51 @@ describe("the target catalogue", () => {
     expect(note).toContain("--tool-call-parser");
   });
 
+  test("Strata and Unsloth Desktop are reachable as model servers", () => {
+    // Ports from each project's own docs: Strata serves on 8080, Unsloth on
+    // 8888 — the same port as its MCP endpoint (studio/MCP.md).
+    expect(findTarget("strata").kind).toBe("model-server");
+    expect(findTarget("strata").endpoint).toBe("http://127.0.0.1:8080/v1");
+    expect(findTarget("unsloth").kind).toBe("model-server");
+    expect(findTarget("unsloth").endpoint).toBe("http://127.0.0.1:8888/v1");
+  });
+
+  test("Unsloth's API key comes from the environment, never from a file we write", () => {
+    // Unsloth's API is authenticated (sk-unsloth-…); Strata's only when it is
+    // exposed past loopback. Neither key belongs in a config this app writes.
+    expect(findTarget("unsloth").apiKeyEnv).toBe("UNSLOTH_API_KEY");
+    expect(findTarget("strata").apiKeyEnv).toBe("STRATA_API_KEY");
+    expect(findTarget("ollama").apiKeyEnv).toBeUndefined();
+  });
+
+  test("Strata's chat gets the tools from a mcpServers file it is pointed at", () => {
+    // Strata reads `--mcp-config <file with mcpServers>`; its own
+    // strata-<model>.json is setup's to rewrite, so ours lives beside our
+    // other settings and the note says which flag to add.
+    const target = findTarget("strata-mcp");
+    expect(target.kind).toBe("mcp-host");
+    expect(target.format).toBe("mcp-json");
+    expect(target.configPath("/bundle")).toContain("strata-mcp.json");
+    expect(target.note).toContain("--mcp-config");
+  });
+
+  test("Unsloth Desktop is handed an mcpServers snippet to import", () => {
+    // Its servers live in a SQLite database (storage/mcp_servers_db.py), so
+    // there is no file of ours to merge; the import accepts the standard
+    // mcpServers JSON (core/inference/mcp_config_import.py).
+    const target = findTarget("unsloth-mcp");
+    expect(target.kind).toBe("mcp-host");
+    expect(target.format).toBeUndefined();
+    // Said by the target, not guessed from the text: every place that shows it
+    // has to say "paste this JSON", never "run this command".
+    expect(target.setupKind).toBe("snippet");
+    expect(findTarget("claude-code-user").setupKind).toBeUndefined();
+    const snippet = target.setupCommand!("C:/notes", "okf-mcp.exe", SERVER);
+    const parsed = JSON.parse(snippet) as { mcpServers: Record<string, StdioServer> };
+    expect(parsed.mcpServers["okf-wiki"]?.command).toBe(SERVER.command);
+    expect(parsed.mcpServers["okf-wiki"]?.env).toEqual(SERVER.env);
+  });
+
   test("Antigravity writes the documented mcpServers shape", () => {
     expect(findTarget("antigravity").format).toBe("mcp-json");
     expect(findTarget("antigravity-cli").format).toBe("mcp-json");
@@ -355,9 +412,21 @@ describe("the target catalogue", () => {
     // No headless binary under this fake root, so it falls back to bun run.
     const spec = serverSpecFor("C:/proj-with-no-build", "C:/notes");
 
-    expect(spec.command).toBe("bun");
+    expect(spec.command).toBe(bunCommand());
     expect(spec.args[1]).toContain("standalone.ts");
     expect(spec.env?.OKF_BUNDLE).toBe("C:/notes");
+  });
+
+  test("the bun fallback is an absolute path when one can be found", () => {
+    // The agent host spawns this, and a GUI-launched host on macOS inherits
+    // launchd's PATH — /usr/bin:/bin:/usr/sbin:/sbin — which never contains
+    // ~/.bun/bin. Bare `bun` there fails to start with nothing said about why.
+    const command = bunCommand();
+
+    // These tests run under Bun, so process.execPath is a real bun binary.
+    expect(isAbsolute(command)).toBe(true);
+    expect(existsSync(command)).toBe(true);
+    expect(/(^|[\\/])bun(\.exe)?$/i.test(command)).toBe(true);
   });
 
   test("the headless binary is preferred once it has been built", () => {
@@ -536,6 +605,29 @@ describe("connectAllTargets", () => {
     expect(existsSync(join(dir, "never.json"))).toBe(false);
   });
 
+  test("a snippet to paste is reported only when its tool is here", async () => {
+    // Unlike Claude Code user scope, an Unsloth snippet is worth nothing on a
+    // machine without Unsloth, and "paste this into Unsloth" there is noise.
+    const snippet: ConnectTarget = {
+      id: "snippet-host",
+      label: "snippet-host",
+      kind: "mcp-host",
+      configPath: () => join(dir, "never.json"),
+      probe: "snippet-host",
+      setupKind: "snippet",
+      setupCommand: () => '{ "mcpServers": {} }',
+      note: "",
+    };
+
+    const absent = await sweep([snippet], { installed: () => false });
+    expect(absent[0]?.status).toBe("skipped");
+
+    const present = await sweep([snippet], { installed: () => true });
+    expect(present[0]?.status).toBe("manual");
+    expect(present[0]?.snippet).toBe(true);
+    expect(existsSync(join(dir, "never.json"))).toBe(false);
+  });
+
   test("one failure does not stop the rest", async () => {
     // Eight unrelated files: a config that cannot be written is no reason to
     // leave the other agents unconnected.
@@ -560,7 +652,7 @@ describe("connectAllTargets", () => {
     });
 
     const ids = report.map((r) => r.target);
-    for (const id of ["ollama", "llamacpp", "lmstudio", "vllm"]) {
+    for (const id of ["ollama", "llamacpp", "lmstudio", "vllm", "strata", "unsloth"]) {
       expect(ids).not.toContain(id);
     }
     expect(ids).toContain("codex");

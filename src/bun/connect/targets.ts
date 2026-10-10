@@ -55,6 +55,14 @@ export interface ConnectTarget {
   probe?: string;
   /** Default endpoint, for model servers. */
   endpoint?: string;
+  /**
+   * Environment variable holding the model server's API key.
+   *
+   * Read at request time and never written anywhere: Unsloth's API is
+   * authenticated with a `sk-unsloth-…` key shown once, and a copy in a config
+   * of ours would be one more place for it to leak from.
+   */
+  apiKeyEnv?: string;
   /** Which config dialect to write. Absent for model servers. */
   format?: ConfigFormat;
   /**
@@ -67,7 +75,13 @@ export interface ConnectTarget {
    * documents `claude mcp add` as the way in. Showing the command is both
    * safer and supported.
    */
-  setupCommand?: (bundleRoot: string, serverCommand: string) => string;
+  setupCommand?: (bundleRoot: string, serverCommand: string, server: StdioServer) => string;
+  /**
+   * What `setupCommand` returns: a shell command (the default) or a config
+   * snippet to paste. Unsloth's is the second, and telling the user to "run"
+   * a JSON object is the mistake this exists to prevent.
+   */
+  setupKind?: "snippet";
   /**
    * Connect by running the tool's own CLI instead of editing its config.
    *
@@ -253,6 +267,55 @@ export const CONNECT_TARGETS: readonly ConnectTarget[] = [
     note: "vllm serve <model> --enable-auto-tool-choice --tool-call-parser <パーサ> で起動してください。両方指定しないとツール呼び出しが無視されます（パーサはモデル依存: llama3_json, hermes など）。",
   },
   {
+    // Strata's README: OpenAI-compatible on 127.0.0.1:8080/v1, any key unless
+    // it was started with --api-key, which is required past loopback.
+    id: "strata",
+    label: "Strata",
+    kind: "model-server",
+    configPath: () => registryPathFor("runtimes.json"),
+    endpoint: "http://127.0.0.1:8080/v1",
+    apiKeyEnv: "STRATA_API_KEY",
+    note: "START-HERE.bat で Strata を起動してください。--api-key を付けて起動した場合は、その値を環境変数 STRATA_API_KEY に設定します。llama.cpp と同じ 8080 番を使うため、同時には起動できません。",
+  },
+  {
+    // unsloth.ai/docs/basics/api: an authenticated OpenAI-compatible API on
+    // the Unsloth port (8888 by default, studio/MCP.md). The key is created
+    // under Settings → API and shown only once.
+    id: "unsloth",
+    label: "Unsloth Desktop",
+    kind: "model-server",
+    configPath: () => registryPathFor("runtimes.json"),
+    probe: "unsloth",
+    endpoint: "http://127.0.0.1:8888/v1",
+    apiKeyEnv: "UNSLOTH_API_KEY",
+    note: "Unsloth でモデルを読み込み、Settings → API で作成した sk-unsloth-… キーを環境変数 UNSLOTH_API_KEY に設定してください。ポートを変えた場合は既定の 8888 を読み替えてください。",
+  },
+  {
+    // Strata's docs/DETAILS.md, "Tools from MCP servers": the chat page takes
+    // servers from `--mcp-config <file with an mcpServers block>`. Its own
+    // strata-<model>.json is rewritten by setup, so ours is a file of its own.
+    id: "strata-mcp",
+    label: "Strata（チャットの MCP ツール）",
+    kind: "mcp-host",
+    format: "mcp-json",
+    configPath: () => registryPathFor("strata-mcp.json"),
+    note: "strata-mcp.json を作ります。run-<model>.bat の serve/server.py の行に --mcp-config <このファイル> を追加し、Strata を再起動してください。チャット画面のみで使えます。",
+  },
+  {
+    // Unsloth keeps MCP servers in its SQLite database
+    // (studio/backend/storage/mcp_servers_db.py), which is not ours to write.
+    // Its import takes the standard mcpServers JSON
+    // (core/inference/mcp_config_import.py), so the snippet is the way in.
+    id: "unsloth-mcp",
+    label: "Unsloth Desktop（MCP ツール）",
+    kind: "mcp-host",
+    configPath: () => registryPathFor("unsloth-mcp.json"),
+    probe: "unsloth",
+    setupKind: "snippet",
+    setupCommand: (_bundleRoot, _serverCommand, server) => mergeMcpJson(null, SERVER_NAME, server),
+    note: "Unsloth の設定はデータベースにあるため、本アプリは書き換えません。表示される JSON を Manage MCP servers のインポートに貼り付けてください。",
+  },
+  {
     // antigravity.google/docs/mcp: `mcpServers`, the same shape Claude Code
     // uses. The global file lives under ~/.gemini because the CLI and the IDE
     // share one agent harness.
@@ -346,6 +409,11 @@ function registryPathFor(file: string): string {
   return appDataPath(file);
 }
 
+/** The model server's API key, from the variable the target names. */
+export function apiKeyFor(target: ConnectTarget): string {
+  return target.apiKeyEnv ? (process.env[target.apiKeyEnv] ?? "") : "";
+}
+
 export function findTarget(id: string): ConnectTarget {
   const target = CONNECT_TARGETS.find((t) => t.id === id);
   if (!target) throw new Error(messages.connectUnknownTarget(id));
@@ -432,10 +500,40 @@ export function serverSpecFor(projectRoot: string, bundleRoot: string): StdioSer
   }
 
   return {
-    command: "bun",
+    command: bunCommand(),
     args: ["run", join(projectRoot, "src", "bun", "mcp", "standalone.ts").replace(/\\/g, "/")],
     env,
   };
+}
+
+/**
+ * How to invoke Bun in a config another program will spawn from.
+ *
+ * An absolute path wherever one can be found, because bare `bun` is only on
+ * PATH in a login shell. A GUI-launched agent host on macOS inherits launchd's
+ * PATH — `/usr/bin:/bin:/usr/sbin:/sbin` — which never contains `~/.bun/bin`,
+ * so the host reports the server as failed to start and nothing says why. The
+ * headless binary above exists to avoid this entirely; this is the fallback
+ * for a checkout that has not built one.
+ *
+ * `process.execPath` is Bun's own path when this runs under Bun, which is the
+ * case for every caller that writes a config.
+ */
+export function bunCommand(): string {
+  const running = process.execPath;
+  if (running && /(^|[\\/])bun(\.exe)?$/i.test(running) && existsSync(running)) {
+    return running.replace(/\\/g, "/");
+  }
+
+  const home = process.env.HOME ?? process.env.USERPROFILE;
+  if (home) {
+    const installed = join(home, ".bun", "bin", platform() === "win32" ? "bun.exe" : "bun");
+    if (existsSync(installed)) return installed.replace(/\\/g, "/");
+  }
+
+  // Nothing absolute to point at. Bare `bun` still works wherever PATH is
+  // inherited, which is every terminal-launched host.
+  return "bun";
 }
 
 /** Render a CLI invocation the way a user would type it. */
@@ -599,6 +697,16 @@ export async function connectAllTargets(options: {
   for (const target of targets) {
     const path = target.configPath(options.bundleRoot);
     const base = { target: target.id, label: target.label, path };
+    const installed = () => options.includeMissing || probe(target);
+
+    // A snippet only means something where its tool is: "paste this into
+    // Unsloth" on a machine without Unsloth is noise. A command is reported
+    // regardless, because `claude mcp add` is the user-scope route that
+    // survives worktrees, and its absence would drop the case that matters.
+    if (target.setupKind === "snippet" && !(await installed())) {
+      outcomes.push({ ...base, status: "skipped", reason: messages.connectNotInstalled(target.label) });
+      continue;
+    }
 
     if (target.setupCommand) {
       outcomes.push({
@@ -606,13 +714,15 @@ export async function connectAllTargets(options: {
         status: "manual",
         command: target.setupCommand(
           options.bundleRoot,
-          serverCommandLine(options.projectRoot, options.bundleRoot)
+          serverCommandLine(options.projectRoot, options.bundleRoot),
+          serverSpecFor(options.projectRoot, options.bundleRoot)
         ),
+        ...(target.setupKind === "snippet" ? { snippet: true } : {}),
       });
       continue;
     }
 
-    if (!options.includeMissing && !(await probe(target))) {
+    if (!(await installed())) {
       outcomes.push({ ...base, status: "skipped", reason: messages.connectNotInstalled(target.label) });
       continue;
     }

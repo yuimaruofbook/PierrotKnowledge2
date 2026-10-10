@@ -158,15 +158,20 @@ status: stable              # draft | stable | deprecated
 MCP ツール（典型的な順序）:
 
 1. `read_agents_md` — **必ず最初**
-2. `loop_start` — **バンドルを変更するなら必ずこれ。** 現状・スキル・完了条件を返す
-3. `skill_open` — `loop_start` が挙げたスキルの手順を読む
-4. `retrieve` — **質問に答えるとき。** 見出し単位の本文を引用付きで返す
-5. `search` — **ページを探すとき。** 1 ドキュメント 1 件で場所を示す
-6. `read_file` — 該当ページ全体を読む（frontmatter・リンク・バックリンク付き）
-7. `create_concept` — 新規ページ（frontmatter を自動生成するので非準拠にならない）
-8. `write_file` — 既存ページの更新
-9. `loop_end` — **最後に必ずこれ。** 変化を突き合わせて記録を閉じる
-10. `rebuild_index` / `rebuild_rag` — 必要時のみ
+2. `context_pack` — **まとまった作業を始めるとき。** タスクに必要な最小限の
+   ファイル群と合致するスキルを、文字数予算内でまとめて返す。1 ファイルずつ
+   読み回るより先にこれを呼ぶ
+3. `loop_start` — **バンドルを変更するなら必ずこれ。** 現状・スキル・完了条件を返す
+4. `skill_open` — `loop_start` が挙げたスキルの手順を読む
+5. `retrieve` — **質問に答えるとき。** 見出し単位の本文を引用付きで返す
+6. `search` — **ページを探すとき。** 1 ドキュメント 1 件で場所を示す
+7. `read_file` — 該当ページ全体を読む（frontmatter・リンク・バックリンク付き）
+8. `create_concept` — 新規ページ（frontmatter を自動生成するので非準拠にならない）
+9. `write_file` — 既存ページの更新。書き込みと同時に OKF 準拠が検査され、
+   `generated` が無いと警告が返る
+10. `loop_end` — **最後に必ずこれ。** 変化を突き合わせて記録を閉じる
+11. `audit_changes` — 誰（human / どのモデル）が何を変えたかを log.md から一覧する
+12. `rebuild_index` / `rebuild_rag` — 必要時のみ
 
 ### ループ（作業の前後で確認する）
 
@@ -223,7 +228,44 @@ loop_end(outcome)         ← 変化を突き合わせ、完了条件を返す
 繰り返す作業だと分かったら `loop_define` で型にしてください。
 一度きりの作業なら、`loop_start` に `goal` を渡せばその場で作られます。
 
-## 5. 命名とリンク
+## 5. 長時間自律作業とモデル階層
+
+### 長時間自律作業プロトコル
+
+セッションをまたぐ・複数段階に及ぶ作業では:
+
+1. **開始時** — `read_map` → `list_tasks` → `read_human` の順で状況を掴み、
+   まとまった作業なら `context_pack` で必要な文脈を一度に取る
+2. **実行中** — 大きな仕事は必ず `loop_define` / `loop_start` で型にする。
+   ファイル変更は自動で記録されるが、**判断・却下した案・見つけた矛盾**は
+   `loop_note` で残す。それ以外に痕跡が残らないため
+3. **完了時** — `update_task` で Task.md を最新にし、`loop_end` で閉じる。
+   途中で終わるときも `status: "abandoned"` で閉じ、残課題を outcome に書く
+4. **推測で書かない。** 根拠のない記述は書かないか、`status: draft` を付けて
+   下書きであることを明示する
+
+### モデル階層（Supervisor / Worker）
+
+複数のモデル（フロンティア + ローカル LLM）が同じバンドルで働く前提の役割分担です。
+どのモデルにもこの規約と同じ層ルール・記録・検査がかかります。
+
+| Tier | 役割 | 想定 |
+|------|------|------|
+| Supervisor | 計画・分解・検証・`status: stable` への昇格・重要な書き込み | フロンティアモデル |
+| Worker | 与えられた文脈内での読み取り・要約・下書き | ローカル LLM など安価なモデル |
+
+- 文脈は `context_pack` で取る。Worker は `tier: "worker"`（小さいパック）、
+  Supervisor は `tier: "supervisor"`（広いパック）を指定する
+- **Worker の書き込みは `status: draft` まで。** `stable` への昇格と内容の検証は
+  Supervisor か人間が行う。Worker は渡されたパックの外を大きく書き換えない
+- すべての書き込みに `generated.by` を付ける（`process:<モデル名>` / `human:<名前>`）。
+  `create_concept` は自動で付け、`write_file` は無いと警告を返す
+- レビュー時は `audit_changes` で「どのモデルが・いつ・何を変えたか」を確認してから
+  信頼する
+
+---
+
+## 6. 命名とリンク
 
 - ファイル名: kebab-case、小文字、ASCII 推奨
 - 概念 ID = **wiki 層からの相対パス**から `.md` を除いたもの
@@ -235,7 +277,7 @@ loop_end(outcome)         ← 変化を突き合わせ、完了条件を返す
 
 ---
 
-## 6. 信頼と出典
+## 7. 信頼と出典
 
 可能な場合:
 

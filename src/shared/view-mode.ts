@@ -13,8 +13,14 @@
 
 export type ViewMode = "edit" | "preview";
 
-/** Extensions the Markdown renderer actually understands. */
-const RENDERABLE = /\.(md|markdown)$/i;
+/**
+ * Extensions the preview pane can render.
+ *
+ * Two renderers sit behind this — Markdown and HTML — but the rule is the same
+ * for both: a file with a rendered form opens in it. Which renderer runs is the
+ * editor's business (`isHtmlPath`), not this decision's.
+ */
+const RENDERABLE = /\.(md|markdown|x?html|htm)$/i;
 
 export function initialViewMode(path: string, binary?: boolean): ViewMode {
   // Nothing to render either way: a binary file has no text at all, and a

@@ -14,6 +14,7 @@
  */
 
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { messages } from "../../shared/messages";
 
 export interface StdioServer {
   command: string;
@@ -24,12 +25,11 @@ export interface StdioServer {
 /**
  * Merge into a `mcpServers`-style JSON config (Claude Code).
  *
- * Unparseable input is treated as absent rather than fatal: the caller has
- * already taken a backup, and refusing to proceed because a config file is
- * broken leaves the user with a broken file and no server.
+ * A config that is present but unreadable stops the merge — see `parseForMerge`
+ * for why that beats treating it as absent.
  */
 export function mergeMcpJson(existing: string | null, name: string, server: StdioServer): string {
-  const root = safeJson(existing);
+  const root = parseForMerge(existing, "mcpServers");
   const servers = isRecord(root.mcpServers) ? { ...root.mcpServers } : {};
 
   servers[name] = {
@@ -50,7 +50,7 @@ export function mergeMcpJson(existing: string | null, name: string, server: Stdi
  * `environment` rather than `env`.
  */
 export function mergeOpencodeJson(existing: string | null, name: string, server: StdioServer): string {
-  const root = safeJson(existing);
+  const root = parseForMerge(existing, "opencode");
   const mcp = isRecord(root.mcp) ? { ...root.mcp } : {};
 
   mcp[name] = {
@@ -149,12 +149,16 @@ function tomlString(value: string): string {
 export function mergeHermesYaml(existing: string | null, name: string, server: StdioServer): string {
   let root: Record<string, unknown> = {};
   if (existing?.trim()) {
+    let parsed: unknown;
     try {
-      const parsed = parseYaml(existing);
-      if (isRecord(parsed)) root = parsed;
+      parsed = parseYaml(existing);
     } catch {
-      // Treated as absent; the caller holds a backup.
+      // Same refusal as the JSON hosts: rewriting a config we could not read
+      // would drop every other agent the user had configured.
+      throw new Error(messages.configUnparseable("Hermes"));
     }
+    if (!isRecord(parsed)) throw new Error(messages.configNotAnObject("Hermes"));
+    root = parsed;
   }
 
   const servers = isRecord(root.mcp_servers) ? { ...root.mcp_servers } : {};
@@ -175,6 +179,34 @@ function safeJson(text: string | null): Record<string, unknown> {
     return isRecord(parsed) ? parsed : {};
   } catch {
     return {};
+  }
+}
+
+/**
+ * Parse a config we are about to rewrite, refusing rather than discarding it.
+ *
+ * Absent or empty is `{}` — there is nothing to lose. Present but unparseable
+ * is an error, because the alternative is what this used to do: treat it as
+ * absent and write back a file containing only our entry, silently deleting
+ * every other MCP server the user had registered.
+ *
+ * "Unparseable" is mostly not "corrupt". Several of these hosts accept JSONC,
+ * so a config with `//` comments or a trailing comma is a *working* config that
+ * `JSON.parse` rejects — the exact case where discarding it costs the most. A
+ * backup is taken before any write, but a user who is told the connection
+ * succeeded has no reason to go looking for one.
+ */
+function parseForMerge(text: string | null, shape: string): Record<string, unknown> {
+  if (!text?.trim()) return {};
+  try {
+    const parsed = JSON.parse(text);
+    if (isRecord(parsed)) return parsed;
+    throw new Error(messages.configNotAnObject(shape));
+  } catch (cause) {
+    if (cause instanceof Error && cause.message.startsWith(messages.configNotAnObject(shape))) {
+      throw cause;
+    }
+    throw new Error(messages.configUnparseable(shape));
   }
 }
 

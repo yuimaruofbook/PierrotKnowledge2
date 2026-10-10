@@ -72,6 +72,17 @@ export interface CreateDirectoryParams {
   path: string;
 }
 
+/** One file dropped onto the window, already decoded as text by the view. */
+export interface CapturedFile {
+  /** The name it had outside; treated as untrusted (see `okf/capture.ts`). */
+  name: string;
+  content: string;
+}
+
+export interface CaptureFilesParams {
+  files: CapturedFile[];
+}
+
 /** An entry in the quick switcher. */
 export interface ConceptSummary {
   id: string;
@@ -116,6 +127,13 @@ export type OkfRpcSchema = {
       readFile: { params: ReadFileParams; response: ReadFileResult };
       writeFile: { params: WriteFileParams; response: WriteFileResult };
       createConcept: { params: CreateConceptParams; response: WriteFileResult };
+      /**
+       * Capture files dropped onto the window into `raw/`.
+       *
+       * Same destination and same rules as an MCP import: this is ingest, and
+       * nothing dropped in has been curated into knowledge yet.
+       */
+      captureFiles: { params: CaptureFilesParams; response: { paths: string[] } };
       /**
        * Is there a newer release? Null when offline or when there is not.
        *
@@ -216,6 +234,8 @@ export type OkfRpcSchema = {
           endpoint?: string;
           /** A command for the user to run, when we must not write the file. */
           setupCommand?: string;
+          /** `setupCommand` is a snippet to paste rather than a command. */
+          setupIsSnippet?: boolean;
           connected: boolean;
         }>;
       };

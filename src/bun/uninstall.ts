@@ -22,10 +22,11 @@
  * which tool is complaining about a program that no longer exists.
  */
 
-import { readFile, rm, rename, stat, writeFile } from "fs/promises";
-import { join } from "path";
+import { readFileSync } from "fs";
+import { lstat, readFile, rm, rename, writeFile } from "fs/promises";
+import { isAbsolute, join } from "path";
 import { isInside } from "../shared/update";
-import { CONNECT_TARGETS } from "./connect/targets";
+import { CONNECT_TARGETS, type ConnectTarget } from "./connect/targets";
 import {
   removeFromCodexToml,
   removeFromHermesYaml,
@@ -90,8 +91,29 @@ export interface UninstallOptions {
   launcherPaths?: readonly string[];
 }
 
+/**
+ * Whether there is anything at this path to act on.
+ *
+ * `lstat`, not `stat`: these paths are about to be unlinked, and the macOS
+ * launcher on a pre-0.5.0 install is a symlink into `build/` — which is
+ * regenerated and no longer holds a desktop app. `stat` follows the link,
+ * fails on the missing target, and reports the dead icon as absent, leaving it
+ * on the Desktop after a "successful" uninstall.
+ */
 async function exists(path: string): Promise<boolean> {
-  return !!(await stat(path).catch(() => null));
+  return !!(await lstat(path).catch(() => null));
+}
+
+/**
+ * Whether a target keeps its config inside the knowledge bundle.
+ *
+ * Asked of the target rather than declared on it, so a bundle-scoped host added
+ * later cannot be missed by forgetting a flag — the one failure mode that made
+ * this worth fixing. Two probes: a path that changes with the bundle root is
+ * one that lives under it.
+ */
+function isBundleScoped(target: ConnectTarget): boolean {
+  return target.configPath("/okf-probe-a") !== target.configPath("/okf-probe-b");
 }
 
 /** Work out what would happen, touching nothing. */
@@ -124,44 +146,75 @@ export async function planUninstall(options: UninstallOptions): Promise<Uninstal
     preserved.push(bundle);
   }
 
-  // Our entry in each agent host's config.
+  // Every bundle, not just the first.
+  //
+  // Three of the targets keep their config *inside* the bundle
+  // (`<bundle>/.mcp.json`, `<bundle>/.cursor/mcp.json`,
+  // `<bundle>/.agents/mcp_config.json`), so which bundle we ask about decides
+  // which registrations get cleaned up. Asking only about `knownBundles[0]`
+  // left the second bundle's three entries behind — and when nothing was known
+  // at all, `configPath("")` produced a *relative* path resolved against the
+  // process's own directory, so the real bundle's entries survived an uninstall
+  // that reported success.
+  const bundleRoots = options.knownBundles.filter((bundle) => bundle && isAbsolute(bundle));
+  const seenConfigs = new Set<string>();
+
   for (const target of CONNECT_TARGETS) {
-    if (target.cliRemove) {
-      const path = target.configPath(options.knownBundles[0] ?? "");
-      // Only if we are actually in there: `hermes mcp remove` on an absent
-      // server is a failure, and a plan that always fails is worse than one
-      // that leaves nothing behind.
+    // A target whose path does not depend on the bundle still has to be swept
+    // once, which is what the empty-string case is for here — its result is
+    // the same whatever is passed.
+    const roots = isBundleScoped(target) ? bundleRoots : [bundleRoots[0] ?? ""];
+
+    for (const root of roots) {
+      const path = target.configPath(root);
+      // The same file can be named by two targets, or by two bundles.
+      if (seenConfigs.has(path)) continue;
+      seenConfigs.add(path);
+
+      if (target.cliRemove) {
+        // Only if we are actually in there: `hermes mcp remove` on an absent
+        // server is a failure, and a plan that always fails is worse than one
+        // that leaves nothing behind.
+        const existing = await readFile(path, "utf8").catch(() => null);
+        if (!existing?.includes(SERVER_NAME)) continue;
+
+        items.push({
+          what: `${target.label} の設定から MCP エントリを削除`,
+          path,
+          action: "run",
+          command: target.cliRemove(SERVER_NAME),
+        });
+        continue;
+      }
+
+      if (!target.format) continue;
+      if (!(await exists(path))) continue;
+
       const existing = await readFile(path, "utf8").catch(() => null);
-      if (!existing?.includes(SERVER_NAME)) continue;
+      const remover = REMOVERS[target.format];
+      if (!remover || remover(existing, SERVER_NAME) === null) continue;
 
       items.push({
         what: `${target.label} の設定から MCP エントリを削除`,
         path,
-        action: "run",
-        command: target.cliRemove(SERVER_NAME),
+        action: "edit",
+        format: target.format,
       });
-      continue;
     }
-
-    if (!target.format) continue;
-    const path = target.configPath(options.knownBundles[0] ?? "");
-    if (!(await exists(path))) continue;
-
-    const existing = await readFile(path, "utf8").catch(() => null);
-    const remover = REMOVERS[target.format];
-    if (!remover || remover(existing, SERVER_NAME) === null) continue;
-
-    items.push({
-      what: `${target.label} の設定から MCP エントリを削除`,
-      path,
-      action: "edit",
-      format: target.format,
-    });
   }
 
   for (const launcher of options.launcherPaths ?? []) {
     if (!(await exists(launcher))) continue;
     items.push({ what: "ランチャー / ショートカット", path: launcher, action: "remove" });
+  }
+
+  // The script setup writes for the desktop shortcuts to run. It lives inside
+  // the install directory, which the user deletes by hand — but it is listed so
+  // the plan accounts for everything setup created, rather than leaving one
+  // file unexplained.
+  const launchScript = join(options.installDir, ".launch-ui.sh");
+  if (await exists(launchScript)) {
+    items.push({ what: "起動スクリプト", path: launchScript, action: "remove" });
   }
 
   // App data holds the session pointer and the registry of external MCP
@@ -206,7 +259,11 @@ export async function applyUninstall(plan: UninstallPlan): Promise<UninstallResu
   for (const item of plan.items) {
     try {
       if (item.action === "remove") {
-        await rm(item.path, { force: true });
+        // Recursive because a launcher is not always a file: the macOS `.app`
+        // from a pre-0.5.0 install is a directory when it was copied rather
+        // than symlinked, and a plain `rm` throws EISDIR on it — turning a
+        // successful uninstall into a reported failure.
+        await rm(item.path, { recursive: true, force: true });
         done.push(item.what);
         continue;
       }
@@ -263,25 +320,75 @@ export async function applyUninstall(plan: UninstallPlan): Promise<UninstallResu
  * The Linux files are still named `okf-wiki.desktop` — setup wrote that name
  * before the rename — so both names are looked for.
  */
-export function launcherPathsFor(appName: string): string[] {
+export function launcherPathsFor(appName: string, desktopDirs?: readonly string[]): string[] {
   const home = process.env.HOME ?? process.env.USERPROFILE;
   if (!home) return [];
 
-  const desktop = join(home, "Desktop");
+  const desktops = desktopDirs?.length ? desktopDirs : desktopDirectories(home);
 
-  if (process.platform === "win32") return [join(desktop, `${appName}.lnk`)];
+  if (process.platform === "win32") return desktops.map((d) => join(d, `${appName}.lnk`));
 
   if (process.platform === "darwin") {
-    return [join(desktop, `${appName}.app`), join(desktop, `${appName}.command`)];
+    return desktops.flatMap((d) => [join(d, `${appName}.app`), join(d, `${appName}.command`)]);
   }
 
   const applications = join(home, ".local", "share", "applications");
   return [
-    join(desktop, "okf-wiki.desktop"),
-    join(desktop, `${appName}.desktop`),
+    ...desktops.flatMap((d) => [join(d, "okf-wiki.desktop"), join(d, `${appName}.desktop`)]),
     join(applications, "okf-wiki.desktop"),
     join(applications, `${appName}.desktop`),
   ];
+}
+
+/**
+ * Every directory that might be the desktop, current setting first.
+ *
+ * `~/Desktop` is only the desktop on an English-locale machine: a Japanese
+ * GNOME puts it at `~/デスクトップ`, a Spanish one at `~/Escritorio`. Setup
+ * asks `xdg-user-dir` and writes the launcher wherever that says, so an
+ * uninstall that looks only in `~/Desktop` leaves a menu entry pointing at an
+ * application that is gone.
+ *
+ * All candidates are returned rather than just the configured one, because the
+ * setting can have changed since the launcher was written — and every path
+ * here is only ever probed for existence before being touched.
+ */
+export function desktopDirectories(home: string): string[] {
+  const found: string[] = [];
+  const add = (dir: string | undefined): void => {
+    if (dir && !found.includes(dir)) found.push(dir);
+  };
+
+  add(readXdgDesktopDir(home));
+  add(process.env.XDG_DESKTOP_DIR);
+  add(join(home, "Desktop"));
+  return found;
+}
+
+/**
+ * The desktop from `user-dirs.dirs`, read rather than shelled out to.
+ *
+ * `xdg-user-dir` is a binary that minimal installs do not carry, but the file
+ * it reads is plain text and always present when the setting exists.
+ */
+function readXdgDesktopDir(home: string): string | undefined {
+  const config = process.env.XDG_CONFIG_HOME ?? join(home, ".config");
+  let text: string;
+  try {
+    text = readFileSync(join(config, "user-dirs.dirs"), "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const match = /^\s*XDG_DESKTOP_DIR\s*=\s*"([^"]*)"/m.exec(text);
+  const raw = match?.[1]?.replace(/\/+$/, "");
+  if (!raw) return undefined;
+
+  // The file writes the home-relative form as `$HOME/Desktop`. Rejoined rather
+  // than concatenated so the result carries this platform's separator, like
+  // every other path here.
+  const relative = /^\$HOME\/?/.exec(raw);
+  return relative ? join(home, raw.slice(relative[0].length)) : raw;
 }
 
 /** Every app-data location, including the pre-rename one. */
