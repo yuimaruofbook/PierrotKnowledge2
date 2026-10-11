@@ -40,7 +40,7 @@ echo
 
 if bash scripts/setup.sh "$@"; then
   echo
-  echo "  完了しました。デスクトップのアイコンから起動できます。"
+  echo "  完了しました。上の Launcher（アイコン）または Start it のコマンドで起動できます。"
 else
   status=$?
   echo

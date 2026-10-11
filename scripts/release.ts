@@ -99,6 +99,25 @@ for (const entry of INCLUDE) {
   copied++;
 }
 
+/**
+ * Line endings each platform's interpreter insists on, enforced on the copy.
+ *
+ * A checkout's line endings depend on the machine and its git settings, and
+ * both failures are silent where the release is built: bash on macOS or Linux
+ * stops at `set -o pipefail\r`, and cmd.exe can miss a `goto` label in an
+ * LF-only batch file.
+ */
+const lineEndings = [
+  ...EXECUTABLE_PATHS.map((rel) => ({ rel, eol: "\n" })),
+  ...INCLUDE.filter((rel) => rel.endsWith(".bat")).map((rel) => ({ rel, eol: "\r\n" })),
+];
+for (const { rel, eol } of lineEndings) {
+  const path = join(staging, rel);
+  if (!(await Bun.file(path).exists())) continue;
+  const text = (await Bun.file(path).text()).replace(/\r\n/g, "\n");
+  await writeFile(path, eol === "\n" ? text : text.replace(/\n/g, eol), "utf8");
+}
+
 // The version travels with the bytes, not with the tag.
 await writeFile(
   join(staging, "okf-release.json"),

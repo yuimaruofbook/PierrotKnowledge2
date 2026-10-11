@@ -25,6 +25,12 @@ if [ -x "$ROOT/build/cli/okf" ]; then
   exec "$ROOT/build/cli/okf" "$@"
 fi
 
+# A Desktop launcher starts with the GUI session's PATH, which on Linux and
+# macOS rarely contains ~/.bun/bin — that is added by the shell's rc file.
+if ! command -v bun >/dev/null 2>&1 && [ -x "$HOME/.bun/bin/bun" ]; then
+  export PATH="$HOME/.bun/bin:$PATH"
+fi
+
 if ! command -v bun >/dev/null 2>&1; then
   echo "Bun が見つかりません。https://bun.sh からインストールしてください。" >&2
   exit 1

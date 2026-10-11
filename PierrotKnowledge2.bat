@@ -18,11 +18,18 @@ set "ROOT=%~dp0"
 
 if exist "%ROOT%build\cli\okf.exe" goto :compiled
 
+rem A Bun that setup installed moments ago is not on the PATH of the session
+rem the Desktop shortcut starts in until the next sign-in, so look where its
+rem installer puts it before giving up.
+set "BUN=bun"
 where bun >nul 2>&1
-if errorlevel 1 goto :nobun
+if not errorlevel 1 goto :run
+set "BUN=%USERPROFILE%\.bun\bin\bun.exe"
+if not exist "%BUN%" goto :nobun
 
+:run
 pushd "%ROOT%"
-bun run src/bun/cli/main.ts %*
+"%BUN%" run src/bun/cli/main.ts %*
 set "CODE=%ERRORLEVEL%"
 popd
 exit /b %CODE%

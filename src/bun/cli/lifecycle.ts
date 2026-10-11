@@ -289,12 +289,24 @@ export async function runUpdate(parsed: ParsedArgs): Promise<number> {
   const stagedRoot = await extractZip(archive, extracted);
 
   console.log("適用中…");
-  const result = await applyUpdate({ installDir, stagedRoot });
+  let result: Awaited<ReturnType<typeof applyUpdate>>;
+  try {
+    result = await applyUpdate({ installDir, stagedRoot });
+  } catch (error) {
+    // applyUpdate has already put the previous files back. The usual cause on
+    // Windows is a folder held open — an Explorer window, an editor, the app.
+    console.error(`\n適用できませんでした。元の状態に戻しています。\n  ${error instanceof Error ? error.message : String(error)}`);
+    console.error("  アプリ・エージェント・このフォルダを開いているエクスプローラーやエディターを閉じてから、もう一度実行してください。");
+    return EXIT_TOOL_ERROR;
+  }
   await writeInstallRecord(installDir, {
     version: release.version ?? installed.version,
     tag: release.tag,
     publishedAt: release.publishedAt,
   });
+  // The archive and its extracted copy are spent; left behind they cost the
+  // size of a release on every update.
+  await rm(staging, { recursive: true, force: true }).catch(() => {});
 
   console.log(`\n完了。置き換えた項目: ${result.replaced.join(", ")}`);
   console.log(`旧版の退避先       : ${result.backupDir}`);

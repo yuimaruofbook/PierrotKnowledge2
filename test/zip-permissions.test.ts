@@ -130,6 +130,25 @@ describe("normalizeZipPermissions", () => {
     expect(readZipPermissions(zip)!.map((e) => e.path)).toEqual(names);
   });
 
+  test("the top-level folder is a traversable directory, not a 0644 file", () => {
+    // Stripping the staging prefix leaves "" for the folder itself, which was
+    // then taken for a file. `unzip` applied 0644 to it on macOS and Linux, so
+    // nobody could `cd` into the download — or read package.json from an
+    // update extracted there.
+    const zip = buildZip([{ name: "PK-0.5.1/", mode: 0o040777 }, ...AS_BUILT]);
+    normalizeZipPermissions(zip, EXECUTABLE);
+
+    const top = readZipPermissions(zip)!.find((e) => e.path === "");
+    expect(top?.mode).toBe(0o040755);
+  });
+
+  test("a backslash-terminated folder is a directory too", () => {
+    const zip = buildZip([{ name: "PK-0.5.1\\scripts\\", mode: 0o040777 }]);
+    normalizeZipPermissions(zip, EXECUTABLE);
+
+    expect(readZipPermissions(zip)![0]!.mode).toBe(0o040755);
+  });
+
   test("backslash separators are matched too", () => {
     // Compress-Archive writes them, and it is still the fallback.
     const zip = buildZip([

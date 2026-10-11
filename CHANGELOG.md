@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.8.2
+
+### Installing and updating on other machines
+
+- **The release zip opens on macOS and Linux again.** The 0.8.0 and 0.8.1
+  archives recorded their top-level folder with a file's `0644` mode, which
+  `unzip` (and Finder) applied: the folder could not be entered, so nothing in
+  it could be run or read. Already unpacked 0.8.1? Run
+  `chmod u+rwx PierrotKnowledge2-0.8.1` once, then `bash SETUP.command`.
+- **Setup on Windows no longer stops at the last step.** Windows PowerShell 5.1
+  treated the guidance `mcp-config` prints to stderr — always, on a fresh zip
+  with no headless binary — as a fatal `NativeCommandError`. The same fix
+  covers `-Connect`, which reported connections that had worked as failures.
+- **The Desktop icon starts without Bun on PATH.** A Bun that setup installed
+  is not on the PATH of the session a shortcut, `.desktop` file or `.command`
+  starts in; both launchers now look in `~/.bun/bin` too.
+- **Updating works on a stock Ubuntu.** Extraction falls back to bsdtar and
+  then Python's `zipfile` when `unzip` is absent (GNU tar cannot read a zip),
+  and repairs folders a broken archive left unenterable.
+- **Linux setup names what Bun's installer needs** (`curl`, `unzip`) and how
+  to install it, instead of failing inside the installer. Without a Desktop
+  folder the launcher still goes into the app menu, and the summary reports
+  where it went rather than promising an icon.
+- **Windows setup** enables TLS 1.2 before downloading Bun, which older
+  Windows 10 builds otherwise refuse.
+- **An update cleans up after itself**: the downloaded archive and its
+  extracted copy are removed once applied. When a locked folder stops an
+  update, it says what to close.
+
+### Release
+
+- `bun run release` forces LF on the shell scripts and CRLF on the `.bat`
+  files in the archive, whatever the checkout's line endings — bash stops at
+  `pipefail\r`, and cmd.exe can miss a `goto` label in an LF-only batch file.
+
 ## 0.8.1
 
 ### One-touch update and uninstall

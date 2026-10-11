@@ -179,11 +179,24 @@ $Bun = Get-BunPath
 
 if (-not $Bun) {
     Write-Note 'Bun not found — installing from bun.sh'
+    # Windows PowerShell 5.1 on older Windows 10 builds still offers TLS 1.0
+    # by default, which bun.sh refuses: "Could not create SSL/TLS secure channel".
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    } catch { }
+
+    # The installer runs in this session and calls native tools of its own;
+    # under 'Stop', Windows PowerShell 5.1 would end setup at their first
+    # stderr line. Success is judged by finding bun.exe afterwards instead.
+    $savedPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
         # Official installer. Requires network access.
         Invoke-RestMethod https://bun.sh/install.ps1 | Invoke-Expression
     } catch {
         throw "Failed to install Bun automatically: $($_.Exception.Message)`nInstall it manually from https://bun.sh and re-run this script."
+    } finally {
+        $ErrorActionPreference = $savedPreference
     }
 
     $env:Path = "$env:USERPROFILE\.bun\bin;$env:Path"
@@ -583,7 +596,21 @@ if (-not $NoShortcut) {
   derives it from `serverSpecFor`, which is the one place that decides.
 #>
 $mcpPath = Join-Path $ProjectRoot 'mcp-config.json'
-$mcpConfig = & $Bun run src/bun/cli/main.ts mcp-config --bundle "$BundlePath" 2>$null
+<#
+  Windows PowerShell 5.1 turns any stderr line from a native command into a
+  NativeCommandError, and under 'Stop' that ends the script even with 2>$null.
+  mcp-config writes guidance to stderr whenever the headless binary is not
+  built — which is every fresh ZIP install — so relax it for this one call.
+#>
+$savedPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+Push-Location $ProjectRoot
+try {
+    $mcpConfig = & $Bun run src/bun/cli/main.ts mcp-config --bundle "$BundlePath" 2>$null
+} finally {
+    Pop-Location
+    $ErrorActionPreference = $savedPreference
+}
 if ($LASTEXITCODE -eq 0 -and $mcpConfig) {
     Set-Content -Path $mcpPath -Value ($mcpConfig -join "`n") -Encoding UTF8
 } else {
@@ -630,10 +657,16 @@ if ($Connect) {
             # duplicating it in PowerShell would mean two implementations of
             # "do not destroy the user's config" and only one of them tested.
             Push-Location $ProjectRoot
+            # 'Continue' for the same reason as mcp-config above: under 'Stop'
+            # a stderr line from bun aborted a connection that had succeeded.
+            $savedPreference = $ErrorActionPreference
+            $ErrorActionPreference = 'Continue'
             try {
-                $output = & $Bun run scripts/connect-agent.ts $runtime.Id $BundlePath 2>&1
+                $output = (& $Bun run scripts/connect-agent.ts $runtime.Id $BundlePath 2>&1 |
+                    ForEach-Object { "$_" }) -join ' '
                 $ok = ($LASTEXITCODE -eq 0)
             } finally {
+                $ErrorActionPreference = $savedPreference
                 Pop-Location
             }
 

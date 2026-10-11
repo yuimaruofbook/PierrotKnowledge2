@@ -88,7 +88,9 @@ export function normalizeZipPermissions(
     // Entries are nested under the staging folder; `bsdtar` writes `/` and
     // `Compress-Archive` writes `\`, so both are normalised before matching.
     const relative = name.replace(/\\/g, "/").replace(/^[^/]*\//, "");
-    const isDirectory = relative.endsWith("/");
+    // Judged on the full name: the staging folder itself strips to "", which
+    // has no trailing slash left to show it is a directory.
+    const isDirectory = /[\\/]$/.test(name);
     const executable = wanted.has(relative);
 
     // Written literally rather than by adding execute to what was there: that

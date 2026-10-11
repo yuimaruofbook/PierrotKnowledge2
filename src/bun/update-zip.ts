@@ -10,7 +10,7 @@
  * carries decides whether extraction should happen at all.
  */
 
-import { mkdir, readdir, rm } from "fs/promises";
+import { chmod, mkdir, readdir, rm, stat } from "fs/promises";
 import { join } from "path";
 import type { ReleaseManifest } from "./update";
 
@@ -90,35 +90,59 @@ export async function readManifestFromZip(
  * These archives wrap everything in one top-level folder, so the caller wants
  * what is inside it rather than the extraction root.
  */
+/**
+ * Extractors to try, in order.
+ *
+ * Several on Unix because none is guaranteed: `unzip` is absent from plenty of
+ * Linux installs (stock Ubuntu included), `tar` is bsdtar on macOS but GNU tar
+ * — which cannot read a zip — on Linux, and Python's own zipfile module is the
+ * one most often present when the others are not. Trying each and reporting
+ * what was missing beats a bare "command not found" for a program the user
+ * never asked to run.
+ */
+export function extractCommands(platform: NodeJS.Platform, archivePath: string, into: string): string[][] {
+  if (platform === "win32") {
+    return [
+      [
+        "powershell",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${into.replace(/'/g, "''")}' -Force`,
+      ],
+    ];
+  }
+  return [
+    ["unzip", "-q", "-o", archivePath, "-d", into],
+    ["bsdtar", "-xf", archivePath, "-C", into],
+    // bsdtar under its usual name on macOS.
+    ["tar", "-xf", archivePath, "-C", into],
+    ["python3", "-m", "zipfile", "-e", archivePath, into],
+  ];
+}
+
+/**
+ * Give the owner rwx on every extracted directory.
+ *
+ * The 0.8.x archives recorded their top-level folder with a file's 0644 mode,
+ * and `unzip` applies it: the folder exists but cannot be entered, so the
+ * update reported "no package.json" for a tree that has one. Repairing it here
+ * keeps updating *to* such an archive working.
+ */
+export async function makeTraversable(dir: string): Promise<void> {
+  const info = await stat(dir);
+  if ((info.mode & 0o700) !== 0o700) await chmod(dir, (info.mode & 0o7777) | 0o700);
+
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) await makeTraversable(join(dir, entry.name));
+  }
+}
+
 export async function extractZip(archivePath: string, into: string): Promise<string> {
   await rm(into, { recursive: true, force: true });
   await mkdir(into, { recursive: true });
 
-  /**
-   * Extractors to try, in order.
-   *
-   * More than one on Unix because neither is guaranteed: `unzip` is absent
-   * from plenty of minimal Linux images, and `bsdtar` (as `tar`) is what macOS
-   * ships. Trying both and reporting what was missing beats a bare "command
-   * not found" for a program the user never asked to run.
-   */
-  const candidates: string[][] =
-    process.platform === "win32"
-      ? [
-          [
-            "powershell",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `Expand-Archive -LiteralPath '${archivePath.replace(/'/g, "''")}' -DestinationPath '${into.replace(/'/g, "''")}' -Force`,
-          ],
-        ]
-      : [
-          ["unzip", "-q", "-o", archivePath, "-d", into],
-          // bsdtar reads zip; present on macOS and most desktop Linux.
-          ["tar", "-xf", archivePath, "-C", into],
-        ];
-
+  const candidates = extractCommands(process.platform, archivePath, into);
   const problems: string[] = [];
 
   for (const command of candidates) {
@@ -135,12 +159,15 @@ export async function extractZip(archivePath: string, into: string): Promise<str
       continue;
     }
 
+    if (process.platform !== "win32") await makeTraversable(into);
     return findRoot(into);
   }
 
   throw new Error(
     `展開に失敗しました。\n${problems.map((p) => `  ${p}`).join("\n")}\n` +
-      (process.platform === "win32" ? "" : "  unzip か bsdtar を入れてから再実行してください。")
+      (process.platform === "win32"
+        ? ""
+        : "  unzip を入れてから再実行してください（例: sudo apt install unzip）。")
   );
 }
 

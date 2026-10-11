@@ -448,6 +448,32 @@ describe("staleCompiledArtifacts", () => {
   });
 });
 
+describe("shell scripts that macOS and Linux run", () => {
+  test("have LF line endings, or bash reads `pipefail\\r` and stops", async () => {
+    // The release copies these byte for byte, so a CRLF working copy on the
+    // Windows machine that builds it is a broken SETUP.command for everyone else.
+    const root = join(import.meta.dir, "..");
+    for (const path of EXECUTABLE_PATHS) {
+      const text = await readFile(join(root, path), "utf8");
+      expect({ path, crlf: text.includes("\r") }).toEqual({ path, crlf: false });
+    }
+  });
+});
+
+describe("batch files that Windows runs", () => {
+  test("have CRLF line endings, or cmd.exe can miss a goto label", async () => {
+    // cmd seeks labels in 512-byte blocks and miscounts LF-only lines, so a
+    // `goto` near a block boundary fails with "The system cannot find the
+    // batch label specified" — on some files and machines, not others.
+    const root = join(import.meta.dir, "..");
+    for (const path of REPLACED_PATHS.filter((p) => p.endsWith(".bat"))) {
+      const text = await readFile(join(root, path), "utf8");
+      const bareLf = text.replace(/\r\n/g, "").includes("\n");
+      expect({ path, bareLf }).toEqual({ path, bareLf: false });
+    }
+  });
+});
+
 describe("the one-touch update wrappers", () => {
   test("are replaced by an update, and the Unix one is executable", () => {
     expect(REPLACED_PATHS as readonly string[]).toContain("UPDATE.bat");

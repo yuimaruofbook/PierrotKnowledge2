@@ -96,6 +96,24 @@ if ! command -v bun >/dev/null 2>&1; then
   if [ -x "$HOME/.bun/bin/bun" ]; then
     export PATH="$HOME/.bun/bin:$PATH"
   else
+    # bun.sh/install downloads with curl and unpacks with unzip, and a stock
+    # Ubuntu ships without unzip — the installer then stops halfway with a
+    # message about a tool the user never asked for. Name both up front.
+    missing=""
+    for tool in curl unzip; do
+      command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+    done
+    if [ -n "$missing" ]; then
+      echo "Bun のインストールに必要なコマンドがありません:$missing" >&2
+      if command -v apt-get >/dev/null 2>&1; then
+        echo "  sudo apt install$missing  を実行してから、もう一度セットアップしてください。" >&2
+      elif command -v dnf >/dev/null 2>&1; then
+        echo "  sudo dnf install$missing  を実行してから、もう一度セットアップしてください。" >&2
+      else
+        echo "  パッケージマネージャーで$missing を入れてから、もう一度セットアップしてください。" >&2
+      fi
+      exit 1
+    fi
     note "Bun not found — installing from bun.sh"
     curl -fsSL https://bun.sh/install | bash
     export PATH="$HOME/.bun/bin:$PATH"
@@ -199,10 +217,13 @@ fi
 
 [ -n "$DESKTOP" ] && [ -d "$DESKTOP" ] || DESKTOP="$HOME/Desktop"
 
-if [ "$NO_SHORTCUT" = "0" ] && [ -d "$DESKTOP" ]; then
+# What the summary reports, so it never claims an icon that was not made.
+SHORTCUT="skipped"
+
+if [ "$NO_SHORTCUT" = "0" ]; then
   step "Creating Desktop launcher"
 
-  if [ "$(uname -s)" = "Darwin" ]; then
+  if [ "$(uname -s)" = "Darwin" ] && [ -d "$DESKTOP" ]; then
     LAUNCHER="$DESKTOP/$APP_NAME.command"
     {
       printf '#!/usr/bin/env bash\n'
@@ -210,14 +231,21 @@ if [ "$NO_SHORTCUT" = "0" ] && [ -d "$DESKTOP" ]; then
     } > "$LAUNCHER"
     chmod +x "$LAUNCHER"
     ok "$LAUNCHER"
+    SHORTCUT="$LAUNCHER"
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    warn "Desktop が見つからないため、アイコンは作りませんでした"
   else
-    # Freedesktop .desktop entry, on the Desktop and in the app menu.
+    # Freedesktop .desktop entry, in the app menu always and on the Desktop
+    # when there is one — servers, WSL and some tiling desktops have none, and
+    # the menu entry is still how a launcher finds the app.
     #
     # Exec points straight at the launcher script. A .desktop value has its own
     # escaping rules on top of the shell's, so the fewer levels of quoting it
     # carries the better: only the backslash and double quote need escaping for
     # the field itself.
-    LAUNCHER="$DESKTOP/okf-wiki.desktop"
+    APPS_DIR="$HOME/.local/share/applications"
+    mkdir -p "$APPS_DIR"
+    LAUNCHER="$APPS_DIR/okf-wiki.desktop"
     EXEC_FIELD="$(printf '%s' "$LAUNCH_SCRIPT" | sed 's/\\/\\\\/g; s/"/\\"/g')"
     cat > "$LAUNCHER" <<EOF
 [Desktop Entry]
@@ -230,18 +258,21 @@ Terminal=true
 Categories=Office;Utility;
 EOF
     chmod +x "$LAUNCHER"
-
-    APPS_DIR="$HOME/.local/share/applications"
-    mkdir -p "$APPS_DIR"
-    cp "$LAUNCHER" "$APPS_DIR/okf-wiki.desktop"
-
-    # Newer GNOME refuses to run a .desktop file it does not trust.
-    if command -v gio >/dev/null 2>&1; then
-      gio set "$LAUNCHER" metadata::trusted true 2>/dev/null || true
-    fi
-
     ok "$LAUNCHER"
-    note "Also installed to $APPS_DIR"
+    SHORTCUT="$LAUNCHER"
+
+    if [ -d "$DESKTOP" ]; then
+      cp "$LAUNCHER" "$DESKTOP/okf-wiki.desktop"
+      chmod +x "$DESKTOP/okf-wiki.desktop"
+      # Newer GNOME refuses to run a .desktop file it does not trust.
+      if command -v gio >/dev/null 2>&1; then
+        gio set "$DESKTOP/okf-wiki.desktop" metadata::trusted true 2>/dev/null || true
+      fi
+      ok "$DESKTOP/okf-wiki.desktop"
+      SHORTCUT="$DESKTOP/okf-wiki.desktop"
+    else
+      note "Desktop が無いため、アプリメニューにだけ登録しました"
+    fi
   fi
 fi
 
@@ -285,7 +316,7 @@ fi
 step "Done"
 echo
 printf '  Bundle    : %s\n' "$BUNDLE_PATH"
-printf '  Desktop   : %s\n' "$([ "$NO_SHORTCUT" = "1" ] && echo skipped || echo "$APP_NAME")"
+printf '  Launcher  : %s\n' "$SHORTCUT"
 printf '  MCP config: %s\n' "$MCP_PATH"
 echo
 printf '  Start it:   cd %s && ./%s ui\n' "$PROJECT_ROOT" "$APP_NAME"
