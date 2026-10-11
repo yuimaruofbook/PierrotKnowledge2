@@ -9,6 +9,7 @@
 
 import type { BaseGroup, BaseResult, BaseResultRow, BaseSummary, BaseViewResponse } from "../../shared/okf/base";
 import { clear, el } from "../dom";
+import { errorMessage } from "../../shared/errors";
 
 export interface BaseViewOptions {
   /** Run one view of a base; without a name, the first. */
@@ -37,7 +38,7 @@ export class BaseView {
       try {
         return await this.options.run(path, view);
       } catch (error) {
-        return { views: [], error: error instanceof Error ? error.message : String(error) };
+        return { views: [], error: errorMessage(error) };
       }
     };
     const remembered = this.chosen.get(path);

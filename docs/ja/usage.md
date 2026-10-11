@@ -620,6 +620,17 @@ Unsloth 以外は認証不要です（ループバック限定のため）。**U
 
 ### 更新
 
+アプリのフォルダにある **`UPDATE.bat`**（macOS / Linux は `UPDATE.command`）を
+ダブルクリックするだけです。リリースノートを表示したあと一度だけ確認し、
+`y` と答えると更新と再ビルド（`bun install`・画面・以前ビルドしたバイナリ）まで
+済ませます。アプリと、これを使っているエージェントは先に終了してください。
+
+> **0.8.0 以前からの更新は一度だけコマンドで行います。** `UPDATE.bat` は 0.8.1 で
+> 入るためです。下の `Update --apply` のあと `bun install` と `bun run build:view`
+> を実行してください。次回からはダブルクリックで済みます。
+
+コマンドで行う場合:
+
 ```powershell
 .\PierrotKnowledge2 Update           確認のみ。検証して内容と判定を表示
 .\PierrotKnowledge2 Update --apply   実際に適用する
@@ -634,6 +645,11 @@ Unsloth 以外は認証不要です（ループバック限定のため）。**U
 - **バンドルがアプリのフォルダ内にある場合は更新自体を拒否します**
 
 ### アンインストール
+
+**`UNINSTALL.bat`**（macOS / Linux は `UNINSTALL.command`）をダブルクリックします。
+計画を表示したあと一度だけ確認し、`y` と答えると実行します。
+
+コマンドで行う場合:
 
 ```powershell
 .\PierrotKnowledge2 Uninstall           計画を表示（何も消さない）

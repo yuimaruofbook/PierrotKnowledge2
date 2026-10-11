@@ -20,6 +20,7 @@ import { isConceptPath, splitFrontmatter } from "../../shared/okf";
 import { skeletonConcept } from "../okf/parser";
 import { formatRetrieval } from "../rag/retrieve";
 import { formatContextPack, type ContextTier } from "../rag/context-pack";
+import { errorMessage } from "../../shared/errors";
 
 export interface ToolResult {
   content: Array<{ type: "text"; text: string }>;
@@ -878,50 +879,42 @@ function filtersFrom(args: Record<string, unknown>): SearchFilters {
 }
 
 /**
- * `para_depth` and `link_depth`, validated, or the message to fail with.
+ * Integer arguments checked against their ranges, renamed for the caller, or
+ * the message to fail with for the first one out of range.
  *
  * Rejected rather than clamped: a depth is a scope the caller chose on
  * purpose, and silently reading a different scope than the one asked for would
  * return an answer to another question.
  */
-function rangeFrom(args: Record<string, unknown>): { paraDepth?: number; linkDepth?: number } | string {
-  const out: { paraDepth?: number; linkDepth?: number } = {};
-  const check = (key: string, min: number, max: number): number | string | undefined => {
-    const value = args[key];
-    if (value === undefined || value === null) return undefined;
-    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
-      return `${key} must be an integer from ${min} to ${max}: ${String(value)}`;
-    }
-    return value;
-  };
-
-  const para = check("para_depth", 1, 4);
-  if (typeof para === "string") return para;
-  if (para !== undefined) out.paraDepth = para;
-
-  const link = check("link_depth", 0, 2);
-  if (typeof link === "string") return link;
-  if (link !== undefined) out.linkDepth = link;
-  return out;
-}
-
-/**
- * `depth` (0-3) and `para_depth` (1-4) for `canvas_from_links`, validated, or
- * the message to fail with. Rejected rather than clamped, like `rangeFrom`.
- */
-function canvasRangeFrom(args: Record<string, unknown>): { depth?: number; paraDepth?: number } | string {
-  const out: { depth?: number; paraDepth?: number } = {};
-  for (const [key, min, max] of [["depth", 0, 3], ["para_depth", 1, 4]] as const) {
+function intArgs<K extends string>(
+  args: Record<string, unknown>,
+  spec: ReadonlyArray<readonly [name: K, key: string, min: number, max: number]>
+): Partial<Record<K, number>> | string {
+  const out: Partial<Record<K, number>> = {};
+  for (const [name, key, min, max] of spec) {
     const value = args[key];
     if (value === undefined || value === null) continue;
     if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
       return `${key} must be an integer from ${min} to ${max}: ${String(value)}`;
     }
-    if (key === "depth") out.depth = value;
-    else out.paraDepth = value;
+    out[name] = value;
   }
   return out;
 }
+
+/** `para_depth` (1-4) and `link_depth` (0-2). */
+const rangeFrom = (args: Record<string, unknown>) =>
+  intArgs(args, [
+    ["paraDepth", "para_depth", 1, 4],
+    ["linkDepth", "link_depth", 0, 2],
+  ]);
+
+/** `depth` (0-3) and `para_depth` (1-4) for `canvas_from_links`. */
+const canvasRangeFrom = (args: Record<string, unknown>) =>
+  intArgs(args, [
+    ["depth", "depth", 0, 3],
+    ["paraDepth", "para_depth", 1, 4],
+  ]);
 
 /** The relations a move could not follow, for the end of its answer. */
 function danglingNote(dangling: ReadonlyArray<{ path: string; kind: string; target: string }>): string {
@@ -1664,6 +1657,6 @@ Warnings: ${warnings.join("; ")}` : `Wrote ${path}`
         return fail(`Unknown tool: ${name}`);
     }
   } catch (error) {
-    return fail(error instanceof Error ? error.message : String(error));
+    return fail(errorMessage(error));
   }
 }

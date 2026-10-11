@@ -33,6 +33,7 @@ import {
 } from "../src/bun/cli/rmux";
 import { TOOLS } from "../src/bun/mcp/tools";
 import { COMMAND_GROUPS, UNLISTED_TOOLS, run } from "../src/bun/cli/main";
+import { isConsent, rebuildSteps } from "../src/bun/cli/lifecycle";
 import { Workspace } from "../src/bun/workspace";
 import { removeTempDir } from "./helpers";
 
@@ -544,5 +545,26 @@ describe("running the CLI", () => {
   test("--help never touches the bundle", async () => {
     // Help must work before anything is configured.
     expect(await run(["search", "--help"])).toBe(0);
+  });
+});
+
+/**
+ * The one-touch UPDATE / UNINSTALL wrappers ask once and act on the answer.
+ * Anything but an explicit yes must leave the machine untouched.
+ */
+describe("asking before update or uninstall", () => {
+  test("only an explicit yes counts as consent", () => {
+    for (const yes of ["y", "Y", "yes", " YES ", "はい"]) expect(isConsent(yes)).toBe(true);
+    for (const no of [null, "", "n", "no", "N", "maybe", "ye s"]) expect(isConsent(no)).toBe(false);
+  });
+
+  test("rebuild installs dependencies, rebuilds the UI, then each stale binary", () => {
+    expect(rebuildSteps(["bun run build:cli", "bun run build:headless"])).toEqual([
+      ["install"],
+      ["run", "build:view"],
+      ["run", "build:cli"],
+      ["run", "build:headless"],
+    ]);
+    expect(rebuildSteps([])).toEqual([["install"], ["run", "build:view"]]);
   });
 });

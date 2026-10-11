@@ -78,8 +78,8 @@ macOS / Linux にはアンインストールの入口自体がありませんで
 `UNINSTALL.command` を追加しています:
 
 ```bash
-bash UNINSTALL.command          # 何が消えて何が残るかを表示するだけ
-bash UNINSTALL.command --apply  # 実行する
+bash UNINSTALL.command          # 何が消えて何が残るかを表示し、y で実行する
+bash UNINSTALL.command --apply  # 確認なしで実行する
 ```
 
 ### 3.5. GUI から起動したエージェントが MCP サーバーを起動できなかった

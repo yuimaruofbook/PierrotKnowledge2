@@ -49,6 +49,8 @@ const INCLUDE = [
   "SETUP.command",
   "UNINSTALL.bat",
   "UNINSTALL.command",
+  "UPDATE.bat",
+  "UPDATE.command",
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
   ".gitignore",

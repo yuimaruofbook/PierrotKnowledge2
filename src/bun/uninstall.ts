@@ -33,7 +33,8 @@ import {
   removeFromMcpJson,
   removeFromOpencodeJson,
 } from "./connect/merge";
-import { appDataPath, appDataReadPaths } from "./app-paths";
+import { appDataPath } from "./app-paths";
+import { errorMessage } from "../shared/errors";
 
 const SERVER_NAME = "okf-wiki";
 
@@ -298,7 +299,7 @@ export async function applyUninstall(plan: UninstallPlan): Promise<UninstallResu
     } catch (error) {
       failed.push({
         path: item.path,
-        reason: error instanceof Error ? error.message : String(error),
+        reason: errorMessage(error),
       });
     }
   }
@@ -389,9 +390,4 @@ function readXdgDesktopDir(home: string): string | undefined {
   // every other path here.
   const relative = /^\$HOME\/?/.exec(raw);
   return relative ? join(home, raw.slice(relative[0].length)) : raw;
-}
-
-/** Every app-data location, including the pre-rename one. */
-export function appDataLocations(file: string): string[] {
-  return appDataReadPaths(file);
 }

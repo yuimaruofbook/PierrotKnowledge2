@@ -24,6 +24,7 @@ import { dirname, join, resolve } from "path";
 import { messages } from "../../shared/messages";
 import type { BulkConnectOutcome } from "../../shared/connect-types";
 import { mergeCodexToml, mergeHermesYaml, mergeMcpJson, mergeOpencodeJson, type StdioServer } from "./merge";
+import { errorMessage } from "../../shared/errors";
 
 export type TargetKind = "mcp-host" | "model-server";
 
@@ -744,7 +745,7 @@ export async function connectAllTargets(options: {
       outcomes.push({
         ...base,
         status: "failed",
-        reason: cause instanceof Error ? cause.message : String(cause),
+        reason: errorMessage(cause),
       });
     }
   }

@@ -14,6 +14,7 @@
 import { APP_ID, APP_NAME } from "../../shared/app";
 import { messages } from "../../shared/messages";
 import type { McpToolDefinition } from "../../shared/mcp-types";
+import { errorMessage } from "../../shared/errors";
 
 export type { McpToolDefinition };
 
@@ -102,7 +103,7 @@ export class McpClient {
       }) as Bun.Subprocess<"pipe", "pipe", "pipe">;
     } catch (cause) {
       throw new Error(
-        messages.mcpSpawnFailed(this.spec.command, cause instanceof Error ? cause.message : String(cause))
+        messages.mcpSpawnFailed(this.spec.command, errorMessage(cause))
       );
     }
 
@@ -196,7 +197,7 @@ export class McpClient {
       } catch (cause) {
         clearTimeout(timer);
         this.pending.delete(id);
-        reject(new Error(cause instanceof Error ? cause.message : String(cause)));
+        reject(new Error(errorMessage(cause)));
       }
     });
   }

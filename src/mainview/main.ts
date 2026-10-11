@@ -25,6 +25,7 @@ import { BaseView } from "./ui/base-view";
 import { CanvasView } from "./ui/canvas-view";
 import { isBasePath } from "../shared/okf/base";
 import { FileTree } from "./ui/tree";
+import { errorMessage } from "../shared/errors";
 
 const ui = {
   open: must<HTMLButtonElement>("btn-open"),
@@ -104,7 +105,7 @@ function showEmptyState(visible: boolean): void {
 }
 
 function reportError(error: unknown): void {
-  setStatus(error instanceof Error ? error.message : String(error), "error");
+  setStatus(errorMessage(error), "error");
 }
 
 /** Bundle-relative path for a concept id, honouring the wiki layer layout. */
@@ -399,13 +400,22 @@ function showUpdateNotice(): void {
   ui.updateBody.appendChild(notes);
 
   const how = el("div", { className: "update-how" });
-  how.appendChild(el("div", { text: "インストールするには、アプリのフォルダで次を実行してください:" }));
-  const code = el("code", { text: "PierrotKnowledge2 Update" });
+  // Double-clicking a .command opens Terminal on macOS but, in most Linux file
+  // managers, an editor — so only Windows is told to double-click.
+  const windows = navigator.userAgent.includes("Windows");
+  how.appendChild(
+    el("div", {
+      text: windows
+        ? "インストールするには、アプリのフォルダにある次のファイルをダブルクリックしてください:"
+        : "インストールするには、アプリのフォルダで次を実行してください（macOS はダブルクリックでも可）:",
+    })
+  );
+  const code = el("code", { text: windows ? "UPDATE.bat" : "bash UPDATE.command" });
   how.appendChild(code);
   how.appendChild(
     el("div", {
       className: "update-meta",
-      text: "内容を確認したうえで `PierrotKnowledge2 Update --apply` で適用します。ノートには触れません。",
+      text: "内容を表示したあと一度だけ確認し、y で更新と再ビルドまで行います。ノートには触れません。",
     })
   );
   ui.updateBody.appendChild(how);

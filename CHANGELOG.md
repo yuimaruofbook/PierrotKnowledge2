@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.8.1
+
+### One-touch update and uninstall
+
+- **`UPDATE.bat` / `UPDATE.command`.** Double-click to check for a release,
+  verify it and read the notes, then answer one `[y/N]` question. `y` installs
+  it and rebuilds what the old release left stale — `bun install`, the
+  interface, and whichever of `build/cli` and `build/headless` were built here
+  before. A step that fails (a binary held open by a running agent) is named,
+  and the rest still run. Anything but an explicit yes changes nothing and
+  deletes the download.
+- **`UNINSTALL.bat` / `UNINSTALL.command` ask instead of stopping.** The plan
+  is shown as before, then one question; `y` carries it out. `-Apply` /
+  `--apply` still skips the question.
+- **CLI.** `Update --confirm --rebuild` and `Uninstall --confirm` are what the
+  wrappers run. Both wrappers run the source with Bun rather than
+  `build/cli/okf.exe`, which may be the Rust port or an older build that does
+  not know `--confirm`, and which Windows would lock while it is rebuilt.
+- The interface's update notice now says to double-click `UPDATE.bat`.
+
+### Internal
+
+- `Update` and `Uninstall` moved out of `cli/main.ts` into `cli/lifecycle.ts`,
+  sharing the install lookup, the bundle list and the apply decision.
+- One `pathExists` / `isDirectory` (`bun/fs.ts`) instead of four copies, one
+  `errorMessage` (`shared/errors.ts`) instead of sixteen inline ternaries, and
+  one integer-range validator for `para_depth` / `link_depth` / `depth`.
+- Removed `planUpdate` and `appDataLocations`, which nothing called.
+
 ## 0.8.0
 
 ### Canvases, typed relations, the graph schema and SYSTEMMAP.md

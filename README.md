@@ -139,8 +139,9 @@ bundle with every agent host found on the machine — Claude Code, Codex,
 opencode and the rest. Each tool's own config is backed up before one entry is
 added, and nothing else in it is touched.
 
-To remove it later, `UNINSTALL.bat` or `bash UNINSTALL.command`. Both show a
-plan first and delete nothing until you agree; your notes are never in it.
+To update later, double-click `UPDATE.bat` (or `bash UPDATE.command`); to
+remove it, `UNINSTALL.bat` (or `bash UNINSTALL.command`). Each shows what it
+is about to do and asks once; your notes are never touched.
 
 Then, **from the folder you installed into**:
 
@@ -316,6 +317,18 @@ Credentials are never typed into this app.
 
 ### Updating
 
+Double-click `UPDATE.bat` (Windows) or run `bash UPDATE.command` (macOS /
+Linux). It checks, verifies and shows the release notes, asks once, and on `y`
+installs the release and rebuilds — `bun install`, the interface, and whichever
+binaries were built here before. Quit the app and any agent using it first: a
+running binary cannot be replaced, and that step is reported as failed.
+
+> **Coming from 0.8.0 or earlier?** `UPDATE.bat` arrives with 0.8.1, so that
+> one update is the command form below, followed by `bun install` and
+> `bun run build:view`. From then on, double-click.
+
+The command form:
+
 ```powershell
 .\PierrotKnowledge2 Update           check, verify, show the release notes
 .\PierrotKnowledge2 Update --apply   install
@@ -333,7 +346,8 @@ nothing is running.
 ### Uninstalling
 
 Double-click `UNINSTALL.bat` (Windows) or run `bash UNINSTALL.command`
-(macOS / Linux). Both take the same two steps as the command form:
+(macOS / Linux). Both show the plan and ask once; `y` carries it out. The
+command form keeps the two steps apart:
 
 ```powershell
 .\PierrotKnowledge2 Uninstall           show the plan
@@ -341,8 +355,8 @@ Double-click `UNINSTALL.bat` (Windows) or run `bash UNINSTALL.command`
 ```
 
 ```bash
-bash UNINSTALL.command                  # show the plan
-bash UNINSTALL.command --apply          # carry it out
+bash UNINSTALL.command                  # show the plan, ask, carry it out
+bash UNINSTALL.command --apply          # carry it out without asking
 ```
 
 The plan lists what **survives** before it lists what goes, because that is the

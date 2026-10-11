@@ -11,6 +11,7 @@
 
 import { chmod, rm } from "fs/promises";
 import { DEFAULT_SOURCE, digestMatches, downloadAndHash, type GithubSource } from "./update";
+import { errorMessage } from "../shared/errors";
 
 /** The platforms the workflow builds, by the names its assets use. */
 const PLATFORMS: Record<string, string> = {
@@ -130,6 +131,6 @@ export async function downloadNativeBinary(options: {
     return { ok: true };
   } catch (cause) {
     await rm(options.to, { force: true }).catch(() => {});
-    return { ok: false, reason: cause instanceof Error ? cause.message : String(cause) };
+    return { ok: false, reason: errorMessage(cause) };
   }
 }

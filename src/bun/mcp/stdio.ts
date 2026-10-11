@@ -10,6 +10,7 @@
 import { APP_NAME } from "../../shared/app";
 import type { Workspace } from "../workspace";
 import { TOOLS, callTool } from "./tools";
+import { errorMessage } from "../../shared/errors";
 
 export const SERVER_NAME = "okf-wiki";
 export const SERVER_VERSION = "0.2.0";
@@ -109,7 +110,7 @@ export async function handleMessage(
         return error(
           id,
           JSONRPC_INTERNAL_ERROR,
-          cause instanceof Error ? cause.message : String(cause)
+          errorMessage(cause)
         );
       }
     }

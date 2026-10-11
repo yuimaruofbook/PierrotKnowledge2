@@ -6,7 +6,8 @@
  * missing pieces (AGENTS.md, the reserved files, the layer directories).
  */
 
-import { mkdir, stat, writeFile } from "fs/promises";
+import { mkdir, writeFile } from "fs/promises";
+import { pathExists as exists } from "../fs";
 import { join, resolve } from "path";
 import agentsMdTemplate from "../../../templates/AGENTS.md" with { type: "text" };
 import helloTemplate from "../../../templates/bundle-skeleton/wiki/hello.md" with { type: "text" };
@@ -59,15 +60,6 @@ const RAW_README = `# raw/ — 元資料を置く場所
 const RAG_GITIGNORE = `# wiki 層から生成される派生インデックス。削除しても再構築されます。
 *
 `;
-
-async function exists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** Write a file only when it is absent. Returns true when it was created. */
 async function writeIfMissing(path: string, content: string): Promise<boolean> {

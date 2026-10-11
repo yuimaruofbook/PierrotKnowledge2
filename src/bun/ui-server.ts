@@ -30,6 +30,7 @@ import type { Connections } from "./connections";
 import { createRequestHandlers } from "./rpc";
 import { nativePlatform, type Platform } from "./platform";
 import type { Workspace } from "./workspace";
+import { errorMessage } from "../shared/errors";
 
 /** Message shapes on the socket. Deliberately tiny — this is not JSON-RPC. */
 interface CallMessage {
@@ -146,7 +147,7 @@ export function startUiServer(options: UiServerOptions): UiServer {
           ws.send(
             JSON.stringify({
               id: call.id,
-              error: error instanceof Error ? error.message : String(error),
+              error: errorMessage(error),
             })
           );
         }

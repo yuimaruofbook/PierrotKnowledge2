@@ -60,15 +60,7 @@ import {
   toPosix,
   type Actor,
 } from "./paths";
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
+import { isDirectory, pathExists } from "../fs";
 
 /**
  * A path that does not exist yet, by appending `-2`, `-3` … when needed.
@@ -86,14 +78,6 @@ async function uniquePath(abs: string): Promise<string> {
     if (!(await pathExists(candidate))) return candidate;
   }
   return `${stem}-${Date.now()}${ext}`;
-}
-
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 /**

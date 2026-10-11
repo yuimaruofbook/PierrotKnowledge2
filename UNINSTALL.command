@@ -5,7 +5,8 @@
 #  macOS: このファイルをダブルクリックしてください。
 #  Linux: bash UNINSTALL.command を実行してください。
 #
-#  まず「何が消えて、何が残るか」を表示します。この時点では何も消しません。
+#  まず「何が消えて、何が残るか」を表示し、一度だけ確認します。
+#  y と答えるまで何も消しません。
 #  知識バンドル（ノート）は削除対象に入りません。
 # ============================================================================
 
@@ -18,7 +19,13 @@ echo "  PierrotKnowledge2 - アンインストール"
 echo "  ============================================"
 echo
 
-bash scripts/uninstall.sh "$@" || status=$?
+# Ask once after the plan, unless --apply already says to go ahead.
+mode="--confirm"
+for arg in "$@"; do
+  [ "$arg" = "--apply" ] && mode=""
+done
+
+bash scripts/uninstall.sh ${mode:+"$mode"} "$@" || status=$?
 
 if [ "${status:-0}" != "0" ]; then
   echo

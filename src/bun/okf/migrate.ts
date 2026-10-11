@@ -24,6 +24,7 @@
  */
 
 import { readdir, rename, stat } from "fs/promises";
+import { pathExists as exists } from "../fs";
 import { join } from "path";
 import { AGENTS_FILE, LOOPS_DIR, SKILLS_DIR, type BundlePaths } from "./paths";
 
@@ -32,10 +33,6 @@ export interface MigrationResult {
   moved: string[];
   /** Sources left in place because the destination already existed. */
   skipped: string[];
-}
-
-async function exists(path: string): Promise<boolean> {
-  return !!(await stat(path).catch(() => null));
 }
 
 /**

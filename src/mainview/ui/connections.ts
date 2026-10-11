@@ -29,6 +29,7 @@ import type { BulkConnectOutcome, BulkConnectStatus } from "../../shared/connect
 import type { AgentRunResult, AgentStep } from "../../shared/agent-types";
 import { collectArguments, fieldsOf } from "../../shared/tool-form";
 import { clear, el } from "../dom";
+import { errorMessage } from "../../shared/errors";
 
 export interface ConnectTargetStatus {
   id: string;
@@ -904,7 +905,7 @@ export class ConnectionsPanel {
         status.appendChild(
           el("div", {
             className: "conn-command",
-            text: error instanceof Error ? error.message : String(error),
+            text: errorMessage(error),
           })
         );
         const retry = el("button", { className: "btn", text: "再試行" });

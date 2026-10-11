@@ -67,6 +67,7 @@ for f in \
   "$PROJECT_ROOT/PierrotKnowledge2" \
   "$PROJECT_ROOT/SETUP.command" \
   "$PROJECT_ROOT/UNINSTALL.command" \
+  "$PROJECT_ROOT/UPDATE.command" \
   "$PROJECT_ROOT/scripts/setup.sh" \
   "$PROJECT_ROOT/scripts/uninstall.sh"
 do
@@ -288,7 +289,8 @@ printf '  Desktop   : %s\n' "$([ "$NO_SHORTCUT" = "1" ] && echo skipped || echo 
 printf '  MCP config: %s\n' "$MCP_PATH"
 echo
 printf '  Start it:   cd %s && ./%s ui\n' "$PROJECT_ROOT" "$APP_NAME"
-printf '  Remove it:  bash scripts/uninstall.sh\n'
+printf '  Update it:  bash UPDATE.command\n'
+printf '  Remove it:  bash UNINSTALL.command\n'
 echo
 
 if [ -z "$CONNECTED" ]; then

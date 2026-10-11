@@ -26,14 +26,7 @@
 import { createHash } from "crypto";
 import { chmod, cp, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "fs/promises";
 import { dirname, join, resolve } from "path";
-import {
-  checkSafeToUpdate,
-  decideUpdate,
-  sha256FromDigest,
-  type InstalledInfo,
-  type ReleaseInfo,
-  type UpdateVerdict,
-} from "../shared/update";
+import { sha256FromDigest, type InstalledInfo, type ReleaseInfo } from "../shared/update";
 
 /** Written into the release archive so the version travels with the bytes. */
 export const MANIFEST_NAME = "okf-release.json";
@@ -73,6 +66,8 @@ export const REPLACED_PATHS = [
   "SETUP.command",
   "UNINSTALL.bat",
   "UNINSTALL.command",
+  "UPDATE.bat",
+  "UPDATE.command",
   "PierrotKnowledge2.bat",
   "PierrotKnowledge2",
   // Entry by entry, not `rust/`: rust/target is a developer's cargo cache,
@@ -95,6 +90,7 @@ export const EXECUTABLE_PATHS = [
   "PierrotKnowledge2",
   "SETUP.command",
   "UNINSTALL.command",
+  "UPDATE.command",
   // Forward slashes on purpose: `join` normalises them for the filesystem, and
   // `scripts/release.ts` matches them against ZIP entry names, which are
   // forward-slash by spec. One list, both uses.
@@ -295,12 +291,6 @@ export async function downloadAndHash(
   return { sha256: hash.digest("hex"), bytes: received };
 }
 
-export interface UpdatePlan {
-  verdict: UpdateVerdict;
-  release: ReleaseInfo;
-  installed: InstalledInfo;
-}
-
 /**
  * Where the application is installed.
  *
@@ -374,46 +364,6 @@ export async function readInstalled(installDir: string): Promise<InstalledInfo> 
     ...(record.tag ? { tag: record.tag } : {}),
     ...(record.publishedAt ? { publishedAt: record.publishedAt } : {}),
   };
-}
-
-/**
- * Everything that can be decided before downloading 285 MB.
- *
- * `releaseVersion` comes from the caller because only the archive knows it,
- * and reading the archive means fetching it. Callers that have not fetched yet
- * pass null and get told to look.
- */
-export async function planUpdate(options: {
-  installDir: string;
-  knownBundles: readonly string[];
-  source?: GithubSource;
-  releaseVersion?: string | null;
-}): Promise<UpdatePlan | { verdict: UpdateVerdict; release: null; installed: InstalledInfo }> {
-  const installed = await readInstalled(options.installDir);
-
-  const safety = checkSafeToUpdate({
-    installDir: options.installDir,
-    knownBundles: options.knownBundles,
-  });
-  if (!safety.ok) {
-    return {
-      verdict: { action: "refuse", reason: safety.problems.join("\n") },
-      release: null,
-      installed,
-    };
-  }
-
-  const release = await fetchLatestRelease(options.source);
-  if (!release) {
-    return {
-      verdict: { action: "refuse", reason: "リリース情報を取得できませんでした。" },
-      release: null,
-      installed,
-    };
-  }
-
-  release.version = options.releaseVersion ?? null;
-  return { verdict: decideUpdate(installed, release), release, installed };
 }
 
 export interface ApplyResult {

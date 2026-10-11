@@ -16,8 +16,7 @@
 
 import { APP_NAME } from "../../shared/app";
 import { existsSync } from "fs";
-import { mkdir, rm } from "fs/promises";
-import { join, resolve } from "path";
+import { resolve } from "path";
 import { TOOLS, callTool, type ToolDefinition } from "../mcp/tools";
 import { Workspace } from "../workspace";
 import { loadSession } from "../state";
@@ -44,33 +43,9 @@ import {
   windowTarget,
   type RmuxCommand,
 } from "./rmux";
-
-const EXIT_OK = 0;
-const EXIT_TOOL_ERROR = 1;
-const EXIT_USAGE = 2;
-
-/**
- * How to type this command, in the shell the user is actually in.
- *
- * Setup does not put the install folder on PATH, and no shell runs a program
- * from the current directory unasked — PowerShell answers
- * `CommandNotFoundException`, a POSIX shell "command not found". Printing the
- * bare name told people to type something that cannot work, and they did.
- */
-const SELF = `${process.platform === "win32" ? ".\\" : "./"}${APP_NAME}`;
-
-/**
- * What to rebuild after the source changes underneath an install.
- *
- * Named per mode since 0.5.0: there is no single `build` any more, and an
- * agent that keeps seeing old behaviour needs the headless binary rebuilt,
- * not the page.
- */
-const REBUILD_HINT = [
-  "  bun install",
-  "  bun run build:view       # 画面（Web UI）",
-  "  bun run build:headless   # エージェントが起動する MCP サーバー（使っている場合）",
-].join("\n");
+import { EXIT_OK, EXIT_TOOL_ERROR, EXIT_USAGE, SELF } from "./common";
+import { runUninstall, runUpdate } from "./lifecycle";
+import { errorMessage } from "../../shared/errors";
 
 /** `skill_find` → `skill-find`. Hyphens read better on a command line. */
 const commandName = (tool: string) => tool.replace(/_/g, "-");
@@ -521,260 +496,7 @@ async function rmuxCapture(options: {
   return view.ok ? EXIT_OK : EXIT_TOOL_ERROR;
 }
 
-/**
- * Update from the newest GitHub release.
- *
- * Nothing is written without `--apply`, and even then only after the download
- * has been verified against the digest GitHub computed. See `bun/update.ts`
- * for the ordering that makes this safe.
- */
-async function runUpdate(parsed: ParsedArgs): Promise<number> {
-  const {
-    DEFAULT_SOURCE,
-    MANIFEST_NAME,
-    applyUpdate,
-    digestMatches,
-    downloadAndHash,
-    fetchLatestRelease,
-    findInstallDir,
-    readInstalled,
-    rollback,
-    staleCompiledArtifacts,
-    writeInstallRecord,
-  } = await import("../update");
-  const { checkSafeToUpdate, decideUpdate } = await import("../../shared/update");
-  const { extractZip, readManifestFromZip } = await import("../update-zip");
 
-  const installDir = await findInstallDir();
-  if (!installDir) {
-    console.error("インストール先を特定できませんでした。アプリのフォルダで実行してください。");
-    return EXIT_TOOL_ERROR;
-  }
-
-  // Rollback is its own path: it needs none of the checks below.
-  if (parsed.flags.rollback) {
-    const dir = String(parsed.flags.rollback);
-    const restored = await rollback(installDir, dir);
-    console.log(`${restored.length} 件を戻しました: ${restored.join(", ")}`);
-    console.log(`\n次に実行してください:\n${REBUILD_HINT}`);
-    return EXIT_OK;
-  }
-
-  const installed = await readInstalled(installDir);
-  console.log(`インストール済み : ${installed.version}${installed.tag ? ` (${installed.tag})` : ""}`);
-
-  // The bundle must not live inside what is about to be replaced.
-  const session = await loadSession();
-  const knownBundles = [
-    ...(session.bundlePath ? [session.bundlePath] : []),
-    ...(process.env.OKF_BUNDLE ? [process.env.OKF_BUNDLE] : []),
-  ];
-  const safety = checkSafeToUpdate({ installDir, knownBundles });
-  if (!safety.ok) {
-    console.error(`\n中止します。\n\n${safety.problems.join("\n\n")}`);
-    return EXIT_TOOL_ERROR;
-  }
-
-  const release = await fetchLatestRelease(DEFAULT_SOURCE);
-  if (!release) {
-    console.error("リリース情報を取得できませんでした。");
-    return EXIT_TOOL_ERROR;
-  }
-
-  console.log(`公開されている   : ${release.name || release.tag} (${release.publishedAt})`);
-  console.log(`アセット         : ${release.assetName} ${(release.assetSize / 1048576).toFixed(1)} MB`);
-  console.log(`digest           : ${release.digest ?? "なし"}\n`);
-
-  if (release.notes.trim()) {
-    // What actually changed, before deciding whether to take it. Truncated
-    // unless asked for in full: these notes run to thousands of characters
-    // and the decision rarely needs all of them.
-    const full = parsed.flags.notes === true;
-    const notes = release.notes.replace(/\r\n/g, "\n").trim();
-    const shown = full ? notes : notes.split("\n").slice(0, 24).join("\n");
-
-    console.log("─".repeat(60));
-    console.log(shown);
-    if (!full && notes.split("\n").length > 24) {
-      console.log(`\n… 全文は --notes、または ${release.htmlUrl}`);
-    }
-    console.log(`${"─".repeat(60)}\n`);
-  }
-
-  if (!release.digest) {
-    console.error("digest が無いため検証できません。中止します。");
-    return EXIT_TOOL_ERROR;
-  }
-
-  const staging = join(installDir, ".okf-update");
-  await mkdir(staging, { recursive: true });
-  const archive = join(staging, release.assetName || "release.zip");
-
-  console.log("ダウンロード中…");
-  let lastShown = 0;
-  const { sha256, bytes } = await downloadAndHash(release.assetUrl, archive, (got, total) => {
-    const pct = total ? Math.floor((got / total) * 100) : 0;
-    if (pct >= lastShown + 10) {
-      lastShown = pct;
-      process.stderr.write(`  ${pct}%\n`);
-    }
-  });
-
-  if (!digestMatches(release.digest, sha256)) {
-    await rm(staging, { recursive: true, force: true });
-    console.error(
-      `\n検証に失敗しました。ダウンロードを破棄します。\n` +
-        `  期待: ${release.digest}\n  実際: sha256:${sha256}`
-    );
-    return EXIT_TOOL_ERROR;
-  }
-  console.log(`検証 OK (${(bytes / 1048576).toFixed(1)} MB)\n`);
-
-  // The version lives in the archive, not in the tag.
-  const manifest = await readManifestFromZip(archive, MANIFEST_NAME);
-  release.version = manifest?.version ?? null;
-
-  const verdict = decideUpdate(installed, release);
-  console.log(`判定: ${verdict.action} — ${verdict.reason}\n`);
-
-  if (verdict.action !== "update") {
-    await rm(staging, { recursive: true, force: true });
-    return verdict.action === "up-to-date" ? EXIT_OK : EXIT_TOOL_ERROR;
-  }
-
-  if (!parsed.flags.apply) {
-    console.log("適用するには次を実行してください:");
-    console.log(`  ${SELF} Update --apply`);
-    console.log(`（ダウンロード済み: ${archive}）`);
-    return EXIT_OK;
-  }
-
-  console.log("展開中…");
-  const extracted = join(staging, "extracted");
-  const stagedRoot = await extractZip(archive, extracted);
-
-  console.log("適用中…");
-  const result = await applyUpdate({ installDir, stagedRoot });
-  await writeInstallRecord(installDir, {
-    version: release.version ?? installed.version,
-    tag: release.tag,
-    publishedAt: release.publishedAt,
-  });
-
-  console.log(`\n完了。置き換えた項目: ${result.replaced.join(", ")}`);
-  console.log(`旧版の退避先       : ${result.backupDir}`);
-  console.log(`\n次に実行してください:\n${REBUILD_HINT}`);
-
-  /*
-   * The failure this prevents: an update that appears to do nothing.
-   *
-   * `build/` is not replaced by an update, and both compiled artefacts are
-   * preferred over the source that was just replaced — the launcher runs
-   * `build/cli/okf.exe` when it exists, and agent hosts spawn
-   * `build/headless/okf-mcp.exe` by the path in their own config. Until they
-   * are rebuilt, the new release is on disk and nothing is running it.
-   */
-  const stale = await staleCompiledArtifacts(installDir);
-  if (stale.length > 0) {
-    console.log("\n⚠ 次のバイナリは古いままです。再ビルドするまで、更新後のコードは動きません:");
-    for (const artefact of stale) {
-      console.log(`  ${artefact.path}`);
-      console.log(`    → ${artefact.rebuild}`);
-    }
-  }
-
-  console.log(`\n問題があれば戻せます:\n  ${SELF} Update --rollback "${result.backupDir}"`);
-  // Said at the end, where it is read: `okf` is a short generic word and this
-  // is the name that will not collide with another tool on the same PATH.
-  console.log(`\n次回以降のアップデートは \`${SELF} Update\` と入力してください。`);
-  return EXIT_OK;
-}
-
-/**
- * Show, and optionally carry out, what removing this application involves.
- *
- * The plan is the default because the question anyone uninstalling has is
- * "will this take my notes with it", and the answer has to be visible before
- * they agree to anything. The install folder itself is never deleted here —
- * see `bun/uninstall.ts`.
- */
-async function runUninstall(parsed: ParsedArgs): Promise<number> {
-  const { findInstallDir } = await import("../update");
-  const { applyUninstall, launcherPathsFor, planUninstall } = await import("../uninstall");
-  const { APP_NAME } = await import("../../shared/app");
-
-  const installDir = await findInstallDir();
-  if (!installDir) {
-    console.error("インストール先を特定できませんでした。アプリのフォルダで実行してください。");
-    return EXIT_TOOL_ERROR;
-  }
-
-  const session = await loadSession();
-  const knownBundles = [
-    ...(session.bundlePath ? [session.bundlePath] : []),
-    ...(process.env.OKF_BUNDLE ? [process.env.OKF_BUNDLE] : []),
-  ];
-
-  const plan = await planUninstall({
-    installDir,
-    knownBundles,
-    purgeSettings: parsed.flags.purge_settings === true,
-    launcherPaths: launcherPathsFor(APP_NAME),
-  });
-
-  if (plan.blockers.length > 0) {
-    console.error(`中止します。\n\n${plan.blockers.join("\n\n")}`);
-    return EXIT_TOOL_ERROR;
-  }
-
-  // Survivors first. This is the answer to the only question that matters.
-  console.log("残るもの（削除しません）:");
-  if (plan.preserved.length === 0) console.log("  （なし）");
-  for (const path of plan.preserved) console.log(`  ✅ ${path}`);
-
-  console.log("\n削除・変更するもの:");
-  if (plan.items.length === 0) console.log("  （なし）");
-  for (const item of plan.items) {
-    console.log(`  ${item.action === "remove" ? "削除" : "編集"}  ${item.what}`);
-    console.log(`        ${item.path}`);
-  }
-
-  console.log(
-    `\nアプリのフォルダは削除しません:\n  ${plan.installDir}\n` +
-      "  実行中のプログラム自身は消せないため、アプリを終了してから手で削除してください。"
-  );
-
-  if (!parsed.flags.apply) {
-    console.log(`\n実行するには:\n  ${SELF} Uninstall --apply`);
-    console.log("設定も消すなら --purge-settings を付けてください。");
-    return EXIT_OK;
-  }
-
-  const result = await applyUninstall(plan);
-
-  console.log(`\n完了: ${result.done.length} 件`);
-  for (const what of result.done) console.log(`  ${what}`);
-  if (result.backups.length) {
-    console.log("\n他ツールの設定は、変更前に退避しています:");
-    for (const backup of result.backups) console.log(`  ${backup}`);
-  }
-  if (result.failed.length) {
-    console.error("\n失敗:");
-    for (const f of result.failed) console.error(`  ${f.path}\n    ${f.reason}`);
-  }
-
-  console.log(`\n最後に、アプリを終了してからこのフォルダを削除してください:\n  ${plan.installDir}`);
-  return result.failed.length ? EXIT_TOOL_ERROR : EXIT_OK;
-}
-
-/**
- * Serve the interface to a browser instead of shipping a window with it.
- *
- * The desktop build measured 633 MB resident, of which about 570 MB was the
- * system WebView's process tree and a second Bun runtime. This mode drops
- * both: the same Vite bundle is handed to a browser that is already open. It
- * is the only interface as of 0.5.0.
- */
 /**
  * Print the MCP entry for a host this app has no target for.
  *
@@ -832,6 +554,14 @@ async function printMcpConfig(parsed: ParsedArgs, bundlePath: string | null): Pr
   return EXIT_OK;
 }
 
+/**
+ * Serve the interface to a browser instead of shipping a window with it.
+ *
+ * The desktop build measured 633 MB resident, of which about 570 MB was the
+ * system WebView's process tree and a second Bun runtime. This mode drops
+ * both: the same Vite bundle is handed to a browser that is already open. It
+ * is the only interface as of 0.5.0.
+ */
 async function serveUi(parsed: ParsedArgs): Promise<number> {
   const bundlePath = await resolveBundle(parsed);
   if (!bundlePath) {
@@ -993,7 +723,7 @@ export async function run(argv: readonly string[]): Promise<number> {
   try {
     await workspace.open(bundle);
   } catch (error) {
-    console.error(error instanceof Error ? error.message : String(error));
+    console.error(errorMessage(error));
     return EXIT_TOOL_ERROR;
   }
 

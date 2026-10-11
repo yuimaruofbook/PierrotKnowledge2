@@ -447,3 +447,11 @@ describe("staleCompiledArtifacts", () => {
     expect(REPLACED_PATHS).toContain("CHANGELOG.md");
   });
 });
+
+describe("the one-touch update wrappers", () => {
+  test("are replaced by an update, and the Unix one is executable", () => {
+    expect(REPLACED_PATHS as readonly string[]).toContain("UPDATE.bat");
+    expect(REPLACED_PATHS as readonly string[]).toContain("UPDATE.command");
+    expect(EXECUTABLE_PATHS as readonly string[]).toContain("UPDATE.command");
+  });
+});

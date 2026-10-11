@@ -20,7 +20,7 @@
  * a folder.
  */
 
-import { stat } from "fs/promises";
+import { isDirectory } from "./fs";
 
 export interface Platform {
   /**
@@ -218,15 +218,6 @@ async function spawnDialog(candidate: DialogCommand): Promise<DialogOutcome> {
   // failed for its own reasons lands here too, and null is the right answer
   // for that as well — the caller asks for the path as text instead.
   return { kind: "cancelled" };
-}
-
-/** Reject a path the dialog gave us that is not a usable folder. */
-async function isDirectory(path: string): Promise<boolean> {
-  try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 /**

@@ -24,6 +24,7 @@ import { estimateTokens } from "../../shared/okf/skill";
 import type { Workspace } from "../workspace";
 import { OpenAiCompatClient, type ChatMessage, type ChatToolDefinition } from "./openai";
 import type { AgentRunResult, AgentStep } from "../../shared/agent-types";
+import { errorMessage } from "../../shared/errors";
 
 export type { AgentRunResult, AgentStep };
 
@@ -251,7 +252,7 @@ export class LocalAgent {
         kind: "tool",
         name: call.function.name,
         arguments: args,
-        result: error instanceof Error ? error.message : String(error),
+        result: errorMessage(error),
         isError: true,
       };
     }

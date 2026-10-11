@@ -114,6 +114,7 @@ import {
   type ContextTier,
 } from "./rag/context-pack";
 import { BundleWatcher } from "./watch";
+import { errorMessage } from "../shared/errors";
 
 /**
  * How long a self-inflicted write suppresses watcher events for that path.
@@ -883,7 +884,7 @@ export class Workspace {
     try {
       file = await readBaseFile(bundle, path);
     } catch (error) {
-      return { views: [], error: error instanceof Error ? error.message : String(error) };
+      return { views: [], error: errorMessage(error) };
     }
     if (!file.ok) return { views: [], error: file.error };
     const views = listViews(file.value);
@@ -894,7 +895,7 @@ export class Workspace {
       });
       return { views, result };
     } catch (error) {
-      return { views, error: error instanceof Error ? error.message : String(error) };
+      return { views, error: errorMessage(error) };
     }
   }
 

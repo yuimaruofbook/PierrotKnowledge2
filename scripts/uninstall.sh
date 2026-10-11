@@ -2,7 +2,8 @@
 #
 # Remove PierrotKnowledge2 from macOS or Linux.
 #
-# Shows a plan and stops. Nothing is deleted until you re-run with --apply,
+# Shows a plan and stops. Nothing is deleted without --apply (or a yes to the
+# question --confirm asks, which is what UNINSTALL.command passes),
 # because the question anyone uninstalling this has is "will it take my notes
 # with it" and the answer has to be visible before agreeing to anything.
 #
@@ -10,6 +11,7 @@
 # ordinary folder outside this directory, and the plan names it as a survivor.
 #
 #   bash scripts/uninstall.sh              show the plan
+#   bash scripts/uninstall.sh --confirm    show the plan, ask, carry it out
 #   bash scripts/uninstall.sh --apply      carry it out
 #   bash scripts/uninstall.sh --apply --purge-settings   also drop settings
 

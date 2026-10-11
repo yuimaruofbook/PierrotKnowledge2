@@ -13,6 +13,7 @@
  */
 
 import { messages } from "../../shared/messages";
+import { errorMessage } from "../../shared/errors";
 
 export interface ChatToolDefinition {
   type: "function";
@@ -140,7 +141,7 @@ export class OpenAiCompatClient {
       // A local server that is simply not running is the overwhelmingly common
       // case, so the message names the URL rather than the exception.
       throw new Error(
-        messages.agentUnreachable(this.label, url, cause instanceof Error ? cause.message : String(cause))
+        messages.agentUnreachable(this.label, url, errorMessage(cause))
       );
     }
 
