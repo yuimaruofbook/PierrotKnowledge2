@@ -6,7 +6,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { Workspace } from "../src/bun/workspace";
@@ -280,5 +280,19 @@ describe("index maintenance", () => {
     expect(stats.documents).toBe(3);
     // design and rag each have several sections.
     expect(stats.chunks).toBeGreaterThan(stats.documents);
+  });
+});
+
+describe("releasing the index", () => {
+  test("after searches, closing frees the bundle for deletion at once", async () => {
+    // A search statement left for the GC keeps fts.sqlite open, so removing the
+    // folder fails with EBUSY whenever the GC is late - which is what made
+    // afterEach (and so whichever test ran last) fail under load.
+    for (let i = 0; i < 25; i++) {
+      workspace.searchChunks("ローカル", { limit: 5 });
+      workspace.search("最高軽量");
+    }
+    await workspace.close();
+    await rm(root, { recursive: true });
   });
 });

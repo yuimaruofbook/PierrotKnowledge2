@@ -47,9 +47,9 @@ The two halves of the application are deliberately separate surfaces:
 
 - **44 RPC methods** — what the interface calls. `ui` mode exposes this and
   nothing else.
-- **41 MCP tools** — what an agent calls. Headless exposes this and nothing
+- **48 MCP tools** — what an agent calls. Headless exposes this and nothing
   else, over stdio.
-- **The CLI** reaches every one of the 41 tools plus `info`, `watch`, `ui`,
+- **The CLI** reaches every one of the 48 tools plus `info`, `watch`, `ui`,
   `serve`, `update` and `rmux`.
 
 **The interface does not serve MCP.** An agent working alongside you is a

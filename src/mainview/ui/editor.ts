@@ -11,6 +11,7 @@ import { messages } from "../../shared/messages";
 import { activeFormats, applyFormat, type FormatAction } from "../../shared/markdown-format";
 import { splitFrontmatter } from "../../shared/okf/frontmatter";
 import { isHtmlPath } from "../../shared/html";
+import { isBasePath } from "../../shared/okf/base";
 import { clear, debounce, el } from "../dom";
 import { renderHtml, renderMarkdown } from "../markdown";
 import { decidePasteContent, readClipboard } from "../paste";
@@ -47,6 +48,8 @@ export interface EditorOptions {
   autocomplete: HTMLElement;
   /** Panel shown in place of the editor for non-text files. */
   binaryNotice: HTMLElement;
+  /** Draws a `.base` file's view into the preview pane. */
+  renderBase: (target: HTMLElement, path: string) => void;
   onDirtyChange: (dirty: boolean) => void;
   onAutosave: () => void;
   onFollowLink: (target: string, kind: "wikilink" | "internal") => void;
@@ -526,7 +529,17 @@ export class Editor {
    * delimiter — cutting at it would eat the top of the document.
    */
   private renderPreview(): void {
+    const path = this.current?.path ?? "";
+
+    // A base is drawn from what is on disk, not from the buffer: the view is
+    // computed on the Bun side, and `main.ts` saves before switching here.
+    if (isBasePath(path)) {
+      this.options.renderBase(this.options.preview, path);
+      return;
+    }
+
     clear(this.options.preview);
+    this.options.preview.classList.remove("base-root");
     const source = this.options.textarea.value;
 
     if (isHtmlPath(this.current?.path ?? "")) {
@@ -543,7 +556,8 @@ export class Editor {
 
     const concept = result.concept;
     if (!concept) {
-      bar.appendChild(el("span", { className: "badge reserved", text: messages.nonConceptFile }));
+      const base = isBasePath(this.current?.path ?? "");
+      bar.appendChild(el("span", { className: base ? "badge type" : "badge reserved", text: base ? "Base" : messages.nonConceptFile }));
       return;
     }
 

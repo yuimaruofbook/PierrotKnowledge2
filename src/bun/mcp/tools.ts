@@ -9,6 +9,8 @@
 import type { SearchFilters } from "../../shared/types";
 import { messages } from "../../shared/messages";
 import { PARA_LABELS, PARA_ORDER, paraOf, parseParaClass } from "../../shared/okf/para";
+import { parseLifecycle } from "../../shared/okf/lifecycle";
+import { isBasePath } from "../../shared/okf/base";
 import type { Task, TaskStatus } from "../../shared/okf/workspace-files";
 import type { Workspace } from "../workspace";
 import { isConceptPath, splitFrontmatter } from "../../shared/okf";
@@ -38,6 +40,22 @@ const fail = (body: string): ToolResult => ({
   isError: true,
 });
 const json = (value: unknown): ToolResult => text(JSON.stringify(value, null, 2));
+
+// Parameters shared by retrieve, context_pack and search.
+const INCLUDE_DEAD = {
+  type: "boolean",
+  description: "Also return concepts tagged DEAD, which are left out by default (default false)",
+};
+const PARA_DEPTH = {
+  type: "number",
+  description:
+    "Only read PARA classes up to this priority, 1-4: 1 projects, 2 +areas, 3 +resources (unfiled concepts and know-how count here), 4 everything (default)",
+};
+const LINK_DEPTH = {
+  type: "number",
+  description:
+    "After retrieval, follow links from the returned files up to 0-2 hops and list those files' one-line descriptions (never bodies) within the same budget (default 0)",
+};
 
 export const TOOLS: readonly ToolDefinition[] = [
   {
@@ -201,6 +219,9 @@ export const TOOLS: readonly ToolDefinition[] = [
         type: { type: "string", description: "Restrict to one OKF type" },
         tags: { type: "array", items: { type: "string" }, description: "Require all these tags" },
         path_prefix: { type: "string", description: "Restrict to a bundle-relative path prefix" },
+        include_dead: INCLUDE_DEAD,
+        para_depth: PARA_DEPTH,
+        link_depth: LINK_DEPTH,
       },
       required: ["query"],
     },
@@ -209,7 +230,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "context_pack",
     title: "Build a context pack",
     description:
-      "Assemble the MINIMAL set of files needed to start a task — relevant passages grouped by file, each file's one-line description, and the skills that match the task — within a character budget. Call this at the START of substantial work instead of reading files one by one. tier='worker' returns a small pack for a cheap or local model doing delegated work; tier='supervisor' returns a broader pack for a frontier model planning or verifying. Omit tier for a middle default.",
+      "Assemble the MINIMAL set of files needed to start a task — relevant passages grouped by file, each file's one-line description, and the skills that match the task — within a character budget. Call this at the START of substantial work instead of reading files one by one. tier='worker' returns a small pack for a cheap or local model doing delegated work; tier='supervisor' returns a broader pack for a frontier model planning or verifying. Omit tier for a middle default. The pack also lists the best-matching know-how (lessons other agents recorded) and, with link_depth, one-line pointers to files linked from the ones above.",
     inputSchema: {
       type: "object",
       properties: {
@@ -226,6 +247,9 @@ export const TOOLS: readonly ToolDefinition[] = [
         type: { type: "string", description: "Restrict to one OKF type" },
         tags: { type: "array", items: { type: "string" }, description: "Require all these tags" },
         path_prefix: { type: "string", description: "Restrict to a bundle-relative path prefix" },
+        include_dead: INCLUDE_DEAD,
+        para_depth: PARA_DEPTH,
+        link_depth: LINK_DEPTH,
       },
       required: ["task"],
     },
@@ -234,7 +258,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "search",
     title: "Search",
     description:
-      "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese via bigram indexing.",
+      "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese via bigram indexing. Concepts tagged DEAD are left out unless include_dead is true (to list them: tags ['DEAD'] with include_dead).",
     inputSchema: {
       type: "object",
       properties: {
@@ -243,6 +267,7 @@ export const TOOLS: readonly ToolDefinition[] = [
         type: { type: "string", description: "Restrict to one OKF type" },
         tags: { type: "array", items: { type: "string" }, description: "Require all these tags" },
         path_prefix: { type: "string", description: "Restrict to a bundle-relative path prefix" },
+        include_dead: INCLUDE_DEAD,
       },
       required: ["query"],
     },
@@ -251,7 +276,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "list_concepts",
     title: "List concepts",
     description:
-      "Every concept id with its title and type. Use to get an overview of the bundle, or to find the exact id for a link.",
+      "Every concept id with its title and type, plus its lifecycle when marked (product | dead). Use to get an overview of the bundle, or to find the exact id for a link. DEAD concepts are listed here too: this is the inventory.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -391,6 +416,31 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
   },
   {
+    name: "summarize_activity",
+    title: "Summarize activity",
+    description:
+      "Summarize what changed in the bundle as a page you can cite: log.md rows grouped by actor, then by file, each line giving the log date and the bundle-relative path it came from, plus totals per action. Nothing is inferred beyond the log. Filter by ISO dates and an actor substring. With save: true it is also written as an ActivitySummary concept at wiki/activity/<since>_<until>[_<actor>].md (credited to 'by', or process:okf; a filter that does not survive as a file name gets a short hash appended so two filters never share a file) and the path is returned instead of the page.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        since: { type: "string", description: "ISO date; only rows on or after it" },
+        until: { type: "string", description: "ISO date; only rows on or before it" },
+        actor: {
+          type: "string",
+          description: "Substring filter on the actor, e.g. 'process:codex'. Only narrows the rows; it does not say who saves the summary.",
+        },
+        by: {
+          type: "string",
+          description: "Who is running this, e.g. 'process:claude-code'; credits a saved summary (default process:okf)",
+        },
+        save: {
+          type: "boolean",
+          description: "Write the summary into wiki/activity/ and return its path (default false)",
+        },
+      },
+    },
+  },
+  {
     name: "rebuild_index",
     title: "Rebuild index.md",
     description: "Regenerate index.md from all concepts currently on disk.",
@@ -483,6 +533,99 @@ export const TOOLS: readonly ToolDefinition[] = [
       properties: {
         para: { type: "string", description: "Restrict to one class. Omit for all." },
       },
+    },
+  },
+
+  {
+    name: "set_lifecycle",
+    title: "Mark Product or DEAD",
+    description:
+      "Mark a concept's lifecycle with a frontmatter tag: 'product' (a finished, trusted result - ranks slightly higher), 'dead' (retired - left out of search, retrieve and context_pack unless include_dead is true; NOT deleted, links and history stay), or 'none' to clear. A concept is never both. To list retired files: search with tags ['DEAD'] and include_dead true.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Bundle-relative path of the concept." },
+        lifecycle: { type: "string", description: "product | dead | none" },
+        actor: { type: "string", description: "Who is making the change, e.g. process:claude-code." },
+      },
+      required: ["path", "lifecycle"],
+    },
+  },
+
+  // ---- know-how ----
+  //
+  // Lighter than a skill: one lesson, found by title. Recorded under
+  // wiki/knowhow/ so every agent reads the same notes.
+  {
+    name: "knowhow_find",
+    title: "Find know-how",
+    description:
+      "Find lessons other agents recorded that fit a task: pitfalls, conventions, 'this worked'. CHEAP — returns titles, descriptions, scores and who recorded each, never the body (read_file the ones that apply). Call this before starting work; context_pack already includes the top three.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        task: { type: "string", description: "What you are about to do, in natural language." },
+        limit: { type: "number", description: "Candidates to return, 1-20. Default 3." },
+      },
+      required: ["task"],
+    },
+  },
+  {
+    name: "knowhow_add",
+    title: "Record know-how",
+    description:
+      "Record one short lesson for the agents that come after you, after a non-obvious discovery: a pitfall, a convention, something that worked. One lesson per call, written so it makes sense without this conversation. Stored in wiki/knowhow/ with who recorded it. Lighter than a skill — if it is a full procedure, write a skill instead.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "The lesson in a few words." },
+        body: { type: "string", description: "What happened and what to do about it. Start with the one-line takeaway." },
+        tags: { type: "array", items: { type: "string" }, description: "Topics, for filtering" },
+        actor: { type: "string", description: "Which agent is recording this, e.g. process:claude-code or process:codex." },
+      },
+      required: ["title", "body", "actor"],
+    },
+  },
+
+  // ---- bases ----
+  //
+  // List and aggregate views over the concepts, in the format Obsidian Bases
+  // reads. Querying one is cheaper and more exact than reading many files.
+  {
+    name: "base_list",
+    title: "List bases",
+    description:
+      "List the .base files in wiki/ with the views each offers (name and type). A base is a saved list or aggregate over the concepts - for example 'every Product by PARA, with counts'. Check here before scanning many files to answer a list or count question: if a base already answers it, base_query returns the rows directly.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "base_query",
+    title: "Query a base",
+    description:
+      "Run one view of a .base file over the concepts and return JSON (columns, rows or groups, summaries, warnings) plus a compact Markdown table in 'markdown'. Rows are ordered deterministically and capped at 500. Use this instead of reading many files for lists, counts and aggregates (e.g. all Product concepts per PARA class). Supports table and cards views; formulas, sorting, grouping and summaries are evaluated for you.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Bundle-relative path of the .base file, e.g. wiki/bases/products-and-dead.base." },
+        view: { type: "string", description: "View name (see base_list). Defaults to the first view." },
+        limit: { type: "number", description: "Return at most this many rows (a positive integer; the view's own limit still applies)." },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "base_write",
+    title: "Write a base",
+    description:
+      "Create or replace a .base file under wiki/. The YAML and the supported subset are checked first and nothing is written if they are invalid; the text is saved exactly as given, so keys this app does not use survive. Format (Obsidian Bases): top-level filters (a string expression, or and/or/not lists), formulas, properties (displayName), summaries, and views of type table or cards with name, filters, order, sort ([{property, direction}]), limit, groupBy ({property, direction}) and summaries ({property: Sum}). File properties: file.name, basename, path, folder, ext, mtime, tags, links, properties, plus file.para; file.hasTag(), file.inFolder(), file.hasLink() work. Frontmatter keys are bare names or note.NAME; formulas are formula.NAME. Create a base when you expect to ask the same list or count question again.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Bundle-relative path ending in .base, under wiki/, e.g. wiki/bases/open-projects.base." },
+        content: { type: "string", description: "The full YAML text of the base." },
+        actor: { type: "string", description: "Who is writing, e.g. process:claude-code." },
+      },
+      required: ["path", "content"],
     },
   },
 
@@ -646,7 +789,36 @@ function filtersFrom(args: Record<string, unknown>): SearchFilters {
   if (tags.length) filters.tags = tags;
   const pathPrefix = str(args, "path_prefix");
   if (pathPrefix) filters.pathPrefix = pathPrefix;
+  if (args.include_dead === true) filters.includeDead = true;
   return filters;
+}
+
+/**
+ * `para_depth` and `link_depth`, validated, or the message to fail with.
+ *
+ * Rejected rather than clamped: a depth is a scope the caller chose on
+ * purpose, and silently reading a different scope than the one asked for would
+ * return an answer to another question.
+ */
+function rangeFrom(args: Record<string, unknown>): { paraDepth?: number; linkDepth?: number } | string {
+  const out: { paraDepth?: number; linkDepth?: number } = {};
+  const check = (key: string, min: number, max: number): number | string | undefined => {
+    const value = args[key];
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      return `${key} must be an integer from ${min} to ${max}: ${String(value)}`;
+    }
+    return value;
+  };
+
+  const para = check("para_depth", 1, 4);
+  if (typeof para === "string") return para;
+  if (para !== undefined) out.paraDepth = para;
+
+  const link = check("link_depth", 0, 2);
+  if (typeof link === "string") return link;
+  if (link !== undefined) out.linkDepth = link;
+  return out;
 }
 
 export async function callTool(
@@ -781,11 +953,14 @@ export async function callTool(
       case "retrieve": {
         const query = str(args, "query");
         if (!query) return fail("'query' is required");
+        const range = rangeFrom(args);
+        if (typeof range === "string") return fail(range);
         const result = workspace.retrieve(query, {
           ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
           ...(typeof args.budget_chars === "number" ? { budgetChars: args.budget_chars } : {}),
           ...(args.expand_neighbours === true ? { expandNeighbours: true } : {}),
           ...filtersFrom(args),
+          ...range,
         });
         return text(formatRetrieval(result));
       }
@@ -798,12 +973,15 @@ export async function callTool(
         if (tier && tier !== "worker" && tier !== "supervisor") {
           return fail(`tier must be 'worker' or 'supervisor': ${tier}`);
         }
+        const range = rangeFrom(args);
+        if (typeof range === "string") return fail(range);
 
         const pack = await workspace.contextPack(task, {
           ...(tier ? { tier: tier as ContextTier } : {}),
           ...(typeof args.budget_chars === "number" ? { budgetChars: args.budget_chars } : {}),
           ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
           ...filtersFrom(args),
+          ...range,
         });
         return text(formatContextPack(pack));
       }
@@ -967,6 +1145,31 @@ export async function callTool(
         return json(result);
       }
 
+      case "summarize_activity": {
+        const since = str(args, "since");
+        if (since && !/^\d{4}-\d{2}-\d{2}$/.test(since.trim())) {
+          return fail(`since must be an ISO date: ${since}`);
+        }
+        const until = str(args, "until");
+        if (until && !/^\d{4}-\d{2}-\d{2}$/.test(until.trim())) {
+          return fail(`until must be an ISO date: ${until}`);
+        }
+        if (since && until && until.trim() < since.trim()) {
+          return fail(`until must not be before since: ${until.trim()} < ${since.trim()}`);
+        }
+
+        const result = await workspace.summarizeActivity({
+          ...(since ? { since: since.trim() } : {}),
+          ...(until ? { until: until.trim() } : {}),
+          ...(str(args, "actor") ? { actor: str(args, "actor") } : {}),
+          ...(str(args, "by").trim() ? { by: str(args, "by").trim() } : {}),
+          save: args.save === true,
+        });
+        if (result.total === 0) return text("No log entries matched the given range or actor.");
+        if (result.saved) return text(`Saved ${result.saved} (${result.total} row(s))`);
+        return text(result.markdown);
+      }
+
       case "rebuild_index": {
         const { rows } = await workspace.rebuildIndex();
         return text(`index.md rebuilt with ${rows} concepts`);
@@ -1065,6 +1268,81 @@ export async function callTool(
 
         for (const list of Object.values(grouped)) list.sort((a, b) => a.id.localeCompare(b.id));
         return json({ order: PARA_ORDER, groups: grouped });
+      }
+
+      case "set_lifecycle": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        const raw = str(args, "lifecycle");
+        const lifecycle = parseLifecycle(raw);
+        if (!lifecycle) return fail(`lifecycle must be product | dead | none${raw ? `: ${raw}` : ""}`);
+
+        const result = await workspace.setLifecycle(path, lifecycle, str(args, "actor") || "process:mcp");
+        return text(
+          result.changed
+            ? `Set lifecycle of ${path} to ${lifecycle}.`
+            : `${path} already has lifecycle ${lifecycle}; nothing changed.`
+        );
+      }
+
+      case "knowhow_find": {
+        const task = str(args, "task");
+        if (!task.trim()) return fail("task is required");
+
+        const result = workspace.knowhowFind(task, typeof args.limit === "number" ? args.limit : 3);
+        if (result.ranked.length === 0) {
+          return text(
+            `No know-how matched: ${task}\nNothing recorded applies yet - when you finish, record what you learned with knowhow_add.`
+          );
+        }
+        return json(result);
+      }
+
+      case "knowhow_add": {
+        const title = str(args, "title").trim();
+        if (!title) return fail("'title' is required");
+        const body = str(args, "body");
+        if (!body.trim()) return fail("'body' is required");
+        const actor = str(args, "actor").trim();
+        if (!actor) {
+          return fail("'actor' is required: say which agent is recording this, e.g. process:claude-code");
+        }
+
+        const { path } = await workspace.knowhowAdd({ title, body, tags: strArray(args, "tags"), actor });
+        return text(`Recorded know-how ${path}`);
+      }
+
+      case "base_list":
+        return json(await workspace.baseList());
+
+      case "base_query": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        if (!isBasePath(path)) return fail("'path' must end in .base");
+        if (args.limit !== undefined && (typeof args.limit !== "number" || !Number.isInteger(args.limit) || args.limit < 1)) {
+          return fail("limit must be a positive integer");
+        }
+        const result = await workspace.baseQuery(
+          path,
+          str(args, "view") || undefined,
+          typeof args.limit === "number" ? args.limit : undefined
+        );
+        const { markdown, ...rest } = result;
+        return json({ path, ...rest, markdown });
+      }
+
+      case "base_write": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        if (typeof args.content !== "string") return fail("'content' is required");
+        const warnings = await workspace.baseWrite(path, args.content, {
+          by: "agent",
+          actor: str(args, "actor") || "process:mcp",
+        });
+        return text(
+          warnings.length > 0 ? `Wrote ${path}
+Warnings: ${warnings.join("; ")}` : `Wrote ${path}`
+        );
       }
 
       case "loop_define": {

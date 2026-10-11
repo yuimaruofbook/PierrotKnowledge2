@@ -8,6 +8,9 @@
 use super::error::{self, Result};
 use super::nodepath;
 use super::paths::{LOOPS_DIR, RAG_DIR, RAW_DIR, SKILLS_DIR, WIKI_DIR};
+use crate::shared::okf::activity::{ACTIVITY_DIR, ACTIVITY_TITLE};
+use crate::shared::okf::base::{BASES_DIR, BASES_TITLE};
+use crate::shared::okf::knowhow::{KNOWHOW_DIR, KNOWHOW_TITLE};
 use crate::shared::okf::para::PARA_ORDER;
 use crate::shared::okf::reserved::{empty_log_md, render_index_md, IndexOptions, OKF_VERSION};
 use crate::shared::okf::workspace_files::{
@@ -21,6 +24,8 @@ const INGEST_REFERENCE: &str =
     include_str!("../../../templates/bundle-skeleton/skills/okf-ingest/reference.md");
 const ANSWER_SKILL: &str = include_str!("../../../templates/bundle-skeleton/skills/wiki-answer/SKILL.md");
 const LINT_SKILL: &str = include_str!("../../../templates/bundle-skeleton/skills/wiki-lint/SKILL.md");
+const PRODUCTS_BASE: &str =
+    include_str!("../../../templates/bundle-skeleton/wiki/bases/products-and-dead.base");
 const LOOPS_README: &str = include_str!("../../../templates/bundle-skeleton/loops/README.md");
 const INGEST_LOOP: &str = include_str!("../../../templates/bundle-skeleton/loops/ingest-notes.md");
 const LINT_LOOP: &str = include_str!("../../../templates/bundle-skeleton/loops/weekly-lint.md");
@@ -75,6 +80,12 @@ pub fn scaffold_bundle(root: &str) -> Result<ScaffoldResult> {
     error::mkdir_p(&nodepath::join(&[&wiki_root, SKILLS_DIR, "query", "wiki-answer"]))?;
     error::mkdir_p(&nodepath::join(&[&wiki_root, SKILLS_DIR, "quality", "wiki-lint"]))?;
     error::mkdir_p(&nodepath::join(&[&wiki_root, LOOPS_DIR]))?;
+    // Lessons agents leave each other, and saved activity summaries: both are
+    // ordinary concepts, so they are searchable like the rest of the wiki.
+    error::mkdir_p(&nodepath::join(&[&wiki_root, KNOWHOW_DIR]))?;
+    error::mkdir_p(&nodepath::join(&[&wiki_root, ACTIVITY_DIR]))?;
+    // Saved list and aggregate views (Obsidian Bases), not concepts.
+    error::mkdir_p(&nodepath::join(&[&wiki_root, BASES_DIR]))?;
 
     let skills = |category: &str, name: &str, file: &str| {
         nodepath::join(&[WIKI_DIR, SKILLS_DIR, category, name, file])
@@ -120,6 +131,20 @@ pub fn scaffold_bundle(root: &str) -> Result<ScaffoldResult> {
         // the user has to invent before they can use it.
         (nodepath::join(&[WIKI_DIR, LOOPS_DIR, "ingest-notes.md"]), INGEST_LOOP.to_string()),
         (nodepath::join(&[WIKI_DIR, LOOPS_DIR, "weekly-lint.md"]), LINT_LOOP.to_string()),
+        (
+            nodepath::join(&[WIKI_DIR, KNOWHOW_DIR, "index.md"]),
+            render_index_md(KNOWHOW_TITLE, &[], &IndexOptions::default()),
+        ),
+        (
+            nodepath::join(&[WIKI_DIR, ACTIVITY_DIR, "index.md"]),
+            render_index_md(ACTIVITY_TITLE, &[], &IndexOptions::default()),
+        ),
+        (
+            nodepath::join(&[WIKI_DIR, BASES_DIR, "index.md"]),
+            render_index_md(BASES_TITLE, &[], &IndexOptions::default()),
+        ),
+        // One working example, so a base is something to copy rather than to invent.
+        (nodepath::join(&[WIKI_DIR, BASES_DIR, "products-and-dead.base"]), PRODUCTS_BASE.to_string()),
     ];
 
     for (rel, content) in files {
@@ -160,6 +185,28 @@ mod tests {
 
         let second = scaffold_bundle(root.to_str().unwrap()).unwrap();
         assert!(second.created.is_empty());
+    }
+
+    #[test]
+    fn knowhow_and_activity_folders_start_with_an_index_each() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("b");
+        let result = scaffold_bundle(root.to_str().unwrap()).unwrap();
+        for (folder, title) in [("knowhow", "Know-how"), ("activity", "Activity")] {
+            let rel = format!("wiki/{folder}/index.md");
+            assert!(result.created.contains(&rel), "{rel}");
+            assert_eq!(std::fs::read_to_string(root.join(&rel)).unwrap(), format!("# {title}\n"));
+        }
+    }
+
+    #[test]
+    fn a_new_bundle_has_a_bases_folder_with_an_index_and_one_example() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("b");
+        let result = scaffold_bundle(root.to_str().unwrap()).unwrap();
+        assert!(result.created.contains(&"wiki/bases/index.md".to_string()));
+        assert!(result.created.contains(&"wiki/bases/products-and-dead.base".to_string()));
+        assert_eq!(std::fs::read_to_string(root.join("wiki/bases/index.md")).unwrap(), "# Bases\n");
     }
 
     #[test]

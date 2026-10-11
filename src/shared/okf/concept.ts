@@ -89,6 +89,9 @@ export function checkConformance(bundleRelPath: string, raw: string): Conformanc
     return { ok: true, errors: [] };
   }
 
+  // A `.base` file is YAML for a view over the concepts, not a concept itself.
+  if (basename.endsWith(".base")) return { ok: true, errors: [] };
+
   if (isReservedFilename(basenameOf(path))) {
     if (yaml === null) return { ok: true, errors: [] };
 

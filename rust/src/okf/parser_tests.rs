@@ -86,6 +86,36 @@ fn parse_concept_trims_leading_newlines_and_resolves_links() {
 }
 
 #[test]
+fn skeleton_writes_extra_keys_after_generated() {
+    let text = skeleton_concept(&ConceptSkeletonOptions {
+        r#type: "Knowhow".into(),
+        title: Some("T".into()),
+        generated_by: Some("process:codex".into()),
+        extra: vec![("by".into(), "process:codex".into())],
+        now: Some(chrono::DateTime::from_timestamp(0, 0).unwrap()),
+        ..Default::default()
+    });
+    assert_eq!(
+        text,
+        "---\ntype: Knowhow\ntitle: T\nstatus: draft\ngenerated:\n  by: process:codex\n  at: 1970-01-01T00:00:00.000Z\nby: process:codex\n---\n\n# T\n"
+    );
+}
+
+#[test]
+fn frontmatter_record_is_the_mapping_as_written_or_nothing() {
+    assert!(frontmatter_record(None).is_none());
+    assert!(frontmatter_record(Some("")).is_none());
+    assert!(frontmatter_record(Some("  \n")).is_none());
+    assert!(frontmatter_record(Some("- a\n- b")).is_none());
+    assert!(frontmatter_record(Some("just text")).is_none());
+    assert!(frontmatter_record(Some("type: [unclosed")).is_none());
+    let record = frontmatter_record(Some("title: T\ntags: [a]")).unwrap();
+    // No default type is invented: this is for rewriting, not reading.
+    assert!(record.get("type").is_none());
+    assert_eq!(record["title"], "T");
+}
+
+#[test]
 fn skeleton_has_a_stable_layout() {
     let text = skeleton_concept(&ConceptSkeletonOptions {
         r#type: " Topic ".into(),
@@ -94,6 +124,7 @@ fn skeleton_has_a_stable_layout() {
         tags: vec!["a".into()],
         body: Some("hello\n\n".into()),
         generated_by: Some("agent".into()),
+        extra: vec![],
         now: Some(chrono::DateTime::from_timestamp(0, 0).unwrap()),
     });
     assert_eq!(

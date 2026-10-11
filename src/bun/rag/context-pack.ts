@@ -9,7 +9,8 @@
  * each should be handed.
  */
 
-import type { RetrievalResult, RetrievedPassage } from "../../shared/types";
+import type { LinkedFile, RetrievalResult, RetrievedPassage } from "../../shared/types";
+import { formatLinked } from "./retrieve";
 
 /**
  * Which class of model the pack is for.
@@ -47,6 +48,16 @@ export interface ContextPackSkill {
   score: number;
 }
 
+/** A lesson a previous agent recorded, offered by title and description only. */
+export interface ContextPackKnowhow {
+  title: string;
+  description: string;
+  path: string;
+  /** Who recorded it. */
+  by: string;
+  score: number;
+}
+
 export interface ContextPack {
   task: string;
   tier?: ContextTier;
@@ -54,6 +65,10 @@ export interface ContextPack {
   files: ContextPackFile[];
   /** Skills that match the task, so procedure travels with context. */
   skills: ContextPackSkill[];
+  /** The best-matching know-how (at most 3), so past lessons travel with it too. */
+  knowhow: ContextPackKnowhow[];
+  /** Files reached by `link_depth`; empty unless links were followed. */
+  linked: LinkedFile[];
   usedChars: number;
   truncated: boolean;
 }
@@ -99,7 +114,12 @@ export function groupPassages(
  * suffice or the whole file is worth a read_file.
  */
 export function formatContextPack(pack: ContextPack): string {
-  if (pack.files.length === 0 && pack.skills.length === 0) {
+  if (
+    pack.files.length === 0 &&
+    pack.skills.length === 0 &&
+    pack.knowhow.length === 0 &&
+    pack.linked.length === 0
+  ) {
     return `No context found for: ${pack.task}\nThe bundle may not cover this yet — check unresolved_links for known gaps.`;
   }
 
@@ -133,6 +153,20 @@ export function formatContextPack(pack: ContextPack): string {
       lines.push(`- **${skill.name}** (${skill.score.toFixed(2)}): ${skill.description}`);
     }
     lines.push("", "Open the one you follow with skill_open — do not open them all.", "");
+  }
+
+  if (pack.knowhow.length > 0) {
+    lines.push("## Relevant know-how", "");
+    for (const item of pack.knowhow) {
+      const description = item.description ? `: ${item.description}` : "";
+      const by = item.by ? ` (by ${item.by})` : "";
+      lines.push(`- **${item.title}** (${item.score.toFixed(2)})${description} — \`${item.path}\`${by}`);
+    }
+    lines.push("", "Lessons from earlier work — read_file the ones that apply.", "");
+  }
+
+  if (pack.linked.length > 0) {
+    lines.push(formatLinked(pack.linked), "");
   }
 
   if (pack.truncated) {

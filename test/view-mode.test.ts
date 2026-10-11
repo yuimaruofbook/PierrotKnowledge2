@@ -32,6 +32,11 @@ describe("opening a file", () => {
     expect(initialViewMode("raw/PAGE.HTML", false)).toBe("preview");
   });
 
+  test("a base opens as its table, not as YAML", () => {
+    expect(initialViewMode("wiki/bases/products-and-dead.base", false)).toBe("preview");
+    expect(initialViewMode("wiki/bases/X.BASE", false)).toBe("preview");
+  });
+
   test("a file the renderer cannot render opens in the editor", () => {
     // Markdown-rendering a JSON file hides its braces and quotes, which are
     // its content rather than markup.

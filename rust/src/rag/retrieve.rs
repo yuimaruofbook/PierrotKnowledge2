@@ -17,7 +17,7 @@ use crate::shared::okf::{
     chunk_anchor, is_content_token, normalize_for_index, parse_query_terms, QueryMode,
 };
 use crate::shared::types::{
-    ChunkHit, RetrievalResult, RetrievedPassage, SearchFilters,
+    ChunkHit, LinkedFile, RetrievalResult, RetrievedPassage, SearchFilters,
 };
 
 /// Default character budget (UTF-16 units; deliberately not tokens).
@@ -40,6 +40,10 @@ pub struct RetrieveOptions {
     pub expand_neighbours: bool,
     /// Content tokens a passage must share with the query (default 2).
     pub min_content_matches: Option<i64>,
+    /// Links to follow from the retrieved files (0-2). Applied by
+    /// `Workspace::retrieve`, which has the link graph; the index-level
+    /// function ignores it.
+    pub link_depth: Option<i64>,
 }
 
 /// Retrieve passages for a query.
@@ -65,10 +69,15 @@ pub fn retrieve(
     if let Some(p) = options.filters.path_prefix.as_ref().filter(|p| !p.is_empty()) {
         filters.path_prefix = Some(p.clone());
     }
+    if options.filters.include_dead == Some(true) {
+        filters.include_dead = Some(true);
+    }
+    filters.para_depth = options.filters.para_depth;
 
     let empty = || RetrievalResult {
         query: query.to_string(),
         passages: Vec::new(),
+        linked: None,
         used_chars: 0,
         truncated: false,
     };
@@ -150,6 +159,7 @@ pub fn retrieve(
     Ok(RetrievalResult {
         query: query.to_string(),
         passages,
+        linked: None,
         used_chars: used_chars as u64,
         truncated,
     })
@@ -319,6 +329,27 @@ pub fn passage_location(passage: &RetrievedPassage) -> String {
     parts.join(" › ")
 }
 
+/// Render the files reached by following links: path, title and the one-line
+/// description, with the hop count and the file each came from so the chain
+/// can be walked back. Shared by retrieval and context packs.
+pub fn format_linked(linked: &[LinkedFile]) -> String {
+    let mut lines = vec![
+        "## Linked files (descriptions only - read_file to open one)".to_string(),
+        String::new(),
+    ];
+    for file in linked {
+        let description = match file.description.as_deref().filter(|d| !d.is_empty()) {
+            Some(d) => format!(": {d}"),
+            None => String::new(),
+        };
+        lines.push(format!(
+            "- `{}` — {} ({}) · hop {} from `{}`{description}",
+            file.path, file.title, file.r#type, file.hops, file.from
+        ));
+    }
+    lines.join("\n")
+}
+
 /// Render a retrieval result as Markdown for an agent.
 pub fn format_retrieval(result: &RetrievalResult) -> String {
     if result.passages.is_empty() {
@@ -347,13 +378,17 @@ pub fn format_retrieval(result: &RetrievalResult) -> String {
         result.passages.len(),
         result.query
     );
+    let linked = match result.linked.as_deref().filter(|l| !l.is_empty()) {
+        Some(linked) => format!("\n\n{}", format_linked(linked)),
+        None => String::new(),
+    };
     let footer = if result.truncated {
         "\n\n_(truncated to fit the context budget — narrow the query or raise budget_chars for more)_"
     } else {
         ""
     };
 
-    format!("{header}\n\n{}{footer}", parts.join("\n\n---\n\n"))
+    format!("{header}\n\n{}{linked}{footer}", parts.join("\n\n---\n\n"))
 }
 
 #[cfg(test)]

@@ -10,6 +10,12 @@ declare module "*.md" {
   export default content;
 }
 
+/** The example `.base` in the bundle skeleton, inlined the same way. */
+declare module "*.base" {
+  const content: string;
+  export default content;
+}
+
 /**
  * `turndown-plugin-gfm` ships no types. It is a Turndown plugin: a function
  * given the service, so this is the whole surface we use.

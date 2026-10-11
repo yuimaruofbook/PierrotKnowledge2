@@ -8,8 +8,9 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::rag::retrieve::format_linked;
 use crate::shared::js_compat::serialize_js_f64;
-use crate::shared::types::{RetrievalResult, RetrievedPassage};
+use crate::shared::types::{LinkedFile, RetrievalResult, RetrievedPassage};
 
 /// Which class of model the pack is for: a cheap "worker" doing delegated
 /// reading or an expensive "supervisor" planning or verifying.
@@ -82,6 +83,18 @@ pub struct ContextPackSkill {
     pub score: f64,
 }
 
+/// A lesson a previous agent recorded, offered by title and description only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextPackKnowhow {
+    pub title: String,
+    pub description: String,
+    pub path: String,
+    /// Who recorded it.
+    pub by: String,
+    #[serde(serialize_with = "serialize_js_f64")]
+    pub score: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextPack {
@@ -92,6 +105,10 @@ pub struct ContextPack {
     pub files: Vec<ContextPackFile>,
     /// Skills that match the task, so procedure travels with context.
     pub skills: Vec<ContextPackSkill>,
+    /// The best-matching know-how (at most 3), so past lessons travel too.
+    pub knowhow: Vec<ContextPackKnowhow>,
+    /// Files reached by `link_depth`; empty unless links were followed.
+    pub linked: Vec<LinkedFile>,
     pub used_chars: u64,
     pub truncated: bool,
 }
@@ -159,7 +176,11 @@ fn to_fixed2(x: f64) -> String {
 /// The shape mirrors `format_retrieval`, grouped so the agent can decide per
 /// file whether the excerpts suffice or the whole file is worth a read.
 pub fn format_context_pack(pack: &ContextPack) -> String {
-    if pack.files.is_empty() && pack.skills.is_empty() {
+    if pack.files.is_empty()
+        && pack.skills.is_empty()
+        && pack.knowhow.is_empty()
+        && pack.linked.is_empty()
+    {
         return format!(
             "No context found for: {}\nThe bundle may not cover this yet — check unresolved_links for known gaps.",
             pack.task
@@ -209,6 +230,33 @@ pub fn format_context_pack(pack: &ContextPack) -> String {
         }
         lines.push(String::new());
         lines.push("Open the one you follow with skill_open — do not open them all.".to_string());
+        lines.push(String::new());
+    }
+
+    if !pack.knowhow.is_empty() {
+        lines.push("## Relevant know-how".to_string());
+        lines.push(String::new());
+        for item in &pack.knowhow {
+            let description = if item.description.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", item.description)
+            };
+            let by = if item.by.is_empty() { String::new() } else { format!(" (by {})", item.by) };
+            lines.push(format!(
+                "- **{}** ({}){description} — `{}`{by}",
+                item.title,
+                to_fixed2(item.score),
+                item.path
+            ));
+        }
+        lines.push(String::new());
+        lines.push("Lessons from earlier work — read_file the ones that apply.".to_string());
+        lines.push(String::new());
+    }
+
+    if !pack.linked.is_empty() {
+        lines.push(format_linked(&pack.linked));
         lines.push(String::new());
     }
 
@@ -272,6 +320,8 @@ mod pack_tests {
                 description: "手順".into(),
                 score: 0.5,
             }],
+            knowhow: vec![],
+            linked: vec![],
             used_chars: r.used_chars,
             truncated: r.truncated,
         }
@@ -313,6 +363,65 @@ mod pack_tests {
     }
 
     #[test]
+    fn format_renders_knowhow_and_linked_groups_after_skills() {
+        let dir = tempfile::tempdir().unwrap();
+        let i = open_corpus(dir.path());
+        let mut p = pack(&i, "RAG のチャンク分割", None);
+        p.knowhow = vec![
+            ContextPackKnowhow {
+                title: "Quote paths".into(),
+                description: "Quote them.".into(),
+                path: "wiki/knowhow/quote-paths.md".into(),
+                by: "process:codex".into(),
+                score: 1.0,
+            },
+            ContextPackKnowhow {
+                title: "Bare".into(),
+                description: String::new(),
+                path: "wiki/knowhow/bare.md".into(),
+                by: String::new(),
+                score: 0.125,
+            },
+        ];
+        p.linked = vec![LinkedFile {
+            path: "wiki/mid.md".into(),
+            id: "mid".into(),
+            title: "Mid".into(),
+            r#type: "Concept".into(),
+            description: None,
+            hops: 2,
+            from: "wiki/head.md".into(),
+        }];
+        let s = format_context_pack(&p);
+        assert!(s.contains(
+            "## Relevant know-how\n\n- **Quote paths** (1.00): Quote them. — `wiki/knowhow/quote-paths.md` (by process:codex)\n- **Bare** (0.13) — `wiki/knowhow/bare.md`\n\nLessons from earlier work — read_file the ones that apply.\n\n## Linked files (descriptions only - read_file to open one)\n\n- `wiki/mid.md` — Mid (Concept) · hop 2 from `wiki/head.md`"
+        ), "{s}");
+        assert!(s.find("## Matching skills").unwrap() < s.find("## Relevant know-how").unwrap());
+    }
+
+    #[test]
+    fn a_pack_with_only_knowhow_is_not_empty() {
+        let p = ContextPack {
+            task: "x".into(),
+            tier: None,
+            budget_chars: 6000,
+            files: vec![],
+            skills: vec![],
+            knowhow: vec![ContextPackKnowhow {
+                title: "T".into(),
+                description: "d".into(),
+                path: "p".into(),
+                by: "b".into(),
+                score: 1.0,
+            }],
+            linked: vec![],
+            used_chars: 0,
+            truncated: false,
+        };
+        assert!(format_context_pack(&p).contains("## Relevant know-how"));
+    }
+
+    #[test]
     fn empty_pack_message() {
         let p = ContextPack {
             task: "量子".into(),
@@ -320,6 +429,8 @@ mod pack_tests {
             budget_chars: 6000,
             files: vec![],
             skills: vec![],
+            knowhow: vec![],
+            linked: vec![],
             used_chars: 0,
             truncated: false,
         };
@@ -327,7 +438,7 @@ mod pack_tests {
         let j = serde_json::to_string(&p).unwrap();
         assert_eq!(
             j,
-            r#"{"task":"量子","budgetChars":6000,"files":[],"skills":[],"usedChars":0,"truncated":false}"#
+            r#"{"task":"量子","budgetChars":6000,"files":[],"skills":[],"knowhow":[],"linked":[],"usedChars":0,"truncated":false}"#
         );
     }
 }

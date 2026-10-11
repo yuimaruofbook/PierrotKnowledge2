@@ -1,0 +1,40 @@
+# Products and DEAD concepts, grouped by PARA class, with counts.
+# Obsidian Bases format: open this file in Obsidian or here to see the table.
+# `file.para` is an okf-wiki extension (project, area, resource or archive).
+filters:
+  or:
+    - file.hasTag("Product")
+    - file.hasTag("DEAD")
+formulas:
+  PARA: 'if(file.para == "project", "1 Projects", if(file.para == "area", "2 Areas", if(file.para == "resource", "3 Resources", "4 Archive")))'
+  Status: 'if(file.hasTag("DEAD"), "DEAD", "Product")'
+properties:
+  formula.PARA:
+    displayName: PARA
+  formula.Status:
+    displayName: Status
+  note.title:
+    displayName: Title
+views:
+  - type: table
+    name: Products and DEAD by PARA
+    groupBy:
+      property: formula.PARA
+      direction: ASC
+    order:
+      - note.title
+      - formula.Status
+      - note.type
+      - file.mtime
+    sort:
+      - property: file.mtime
+        direction: DESC
+    summaries:
+      note.title: Count
+  - type: cards
+    name: Products
+    filters: file.hasTag("Product")
+    order:
+      - note.title
+      - note.type
+      - note.description

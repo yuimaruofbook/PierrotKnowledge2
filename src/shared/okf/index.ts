@@ -7,3 +7,7 @@ export * from "./reserved";
 export * from "./text";
 export * from "./workspace-files";
 export * from "./daily";
+export * from "./lifecycle";
+export * from "./activity";
+export * from "./knowhow";
+export * from "./base";

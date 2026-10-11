@@ -58,6 +58,39 @@ export function parseFrontmatter(yaml: string | null): ConceptFrontmatter {
   return { ...record, type };
 }
 
+/**
+ * The frontmatter exactly as written: a mapping, or `null` when there is none
+ * to edit (absent, empty, not a mapping, or not valid YAML).
+ *
+ * `parseFrontmatter` papers over all of those with a default `type`, which is
+ * right for reading and wrong for rewriting: saving that default back would
+ * replace a broken block the author could still repair by hand.
+ */
+export function frontmatterRecord(yaml: string | null): Record<string, unknown> | null {
+  if (yaml === null || !yaml.trim()) return null;
+  try {
+    const parsed: unknown = parseYaml(yaml);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A `.base` document as plain data: `{ ok: true, value }` (`null` for an empty
+ * file), or `{ ok: false }` when it is not YAML. The parser's own message is
+ * dropped on purpose: the Rust port words it differently, and callers only
+ * need to know it failed.
+ */
+export function parseBaseYaml(text: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: parseYaml(text) ?? null };
+  } catch {
+    return { ok: false };
+  }
+}
+
 export function parseConcept(opts: ParseConceptOptions): ConceptDocument {
   const { yaml, body } = splitFrontmatter(opts.raw);
   const frontmatter = parseFrontmatter(yaml);
@@ -95,6 +128,8 @@ export interface ConceptSkeletonOptions {
   tags?: string[];
   body?: string;
   generatedBy?: string;
+  /** Extra string keys, written after `generated` (e.g. `by` on know-how). */
+  extra?: Record<string, string>;
   now?: Date;
 }
 
@@ -112,6 +147,7 @@ export function skeletonConcept(opts: ConceptSkeletonOptions): string {
       at: (opts.now ?? new Date()).toISOString(),
     };
   }
+  for (const [key, value] of Object.entries(opts.extra ?? {})) frontmatter[key] = value;
   frontmatter.status = "draft";
 
   const heading = opts.title ? `# ${opts.title}\n\n` : "";

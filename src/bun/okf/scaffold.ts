@@ -14,10 +14,21 @@ import ingestSkill from "../../../templates/bundle-skeleton/skills/okf-ingest/SK
 import ingestReference from "../../../templates/bundle-skeleton/skills/okf-ingest/reference.md" with { type: "text" };
 import answerSkill from "../../../templates/bundle-skeleton/skills/wiki-answer/SKILL.md" with { type: "text" };
 import lintSkill from "../../../templates/bundle-skeleton/skills/wiki-lint/SKILL.md" with { type: "text" };
+import productsBase from "../../../templates/bundle-skeleton/wiki/bases/products-and-dead.base" with { type: "text" };
 import loopsReadme from "../../../templates/bundle-skeleton/loops/README.md" with { type: "text" };
 import ingestLoop from "../../../templates/bundle-skeleton/loops/ingest-notes.md" with { type: "text" };
 import lintLoop from "../../../templates/bundle-skeleton/loops/weekly-lint.md" with { type: "text" };
-import { OKF_VERSION, emptyLogMd, renderIndexMd } from "../../shared/okf";
+import {
+  ACTIVITY_DIR,
+  ACTIVITY_TITLE,
+  BASES_DIR,
+  BASES_TITLE,
+  KNOWHOW_DIR,
+  KNOWHOW_TITLE,
+  OKF_VERSION,
+  emptyLogMd,
+  renderIndexMd,
+} from "../../shared/okf";
 import { LOOPS_DIR, RAG_DIR, RAW_DIR, SKILLS_DIR, WIKI_DIR } from "./paths";
 import { PARA_DIRS, PARA_ORDER } from "../../shared/okf/para";
 import {
@@ -84,6 +95,12 @@ export async function scaffoldBundle(root: string): Promise<ScaffoldResult> {
   await mkdir(join(wikiRoot, SKILLS_DIR, "query", "wiki-answer"), { recursive: true });
   await mkdir(join(wikiRoot, SKILLS_DIR, "quality", "wiki-lint"), { recursive: true });
   await mkdir(join(wikiRoot, LOOPS_DIR), { recursive: true });
+  // Lessons agents leave each other, and saved activity summaries: both are
+  // ordinary concepts, so they are searchable like the rest of the wiki.
+  await mkdir(join(wikiRoot, KNOWHOW_DIR), { recursive: true });
+  await mkdir(join(wikiRoot, ACTIVITY_DIR), { recursive: true });
+  // Saved list and aggregate views (Obsidian Bases), not concepts.
+  await mkdir(join(wikiRoot, BASES_DIR), { recursive: true });
 
   const files: Array<[string, string]> = [
     [join(WIKI_DIR, "AGENTS.md"), agentsMdTemplate],
@@ -111,6 +128,11 @@ export async function scaffoldBundle(root: string): Promise<ScaffoldResult> {
     // user has to invent before they can use it.
     [join(WIKI_DIR, LOOPS_DIR, "ingest-notes.md"), ingestLoop],
     [join(WIKI_DIR, LOOPS_DIR, "weekly-lint.md"), lintLoop],
+    [join(WIKI_DIR, KNOWHOW_DIR, "index.md"), renderIndexMd(KNOWHOW_TITLE, [])],
+    [join(WIKI_DIR, ACTIVITY_DIR, "index.md"), renderIndexMd(ACTIVITY_TITLE, [])],
+    [join(WIKI_DIR, BASES_DIR, "index.md"), renderIndexMd(BASES_TITLE, [])],
+    // One working example, so a base is something to copy rather than to invent.
+    [join(WIKI_DIR, BASES_DIR, "products-and-dead.base"), productsBase],
   ];
 
   for (const [rel, content] of files) {

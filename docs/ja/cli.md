@@ -84,7 +84,7 @@ okf archive wiki/1-projects/x.md archive   PARA を変更（実ファイル移�
 
 ### 全コマンド
 
-MCP の 41 ツールがすべて使えます。アンダースコアはハイフンになります
+MCP の 48 ツールがすべて使えます。アンダースコアはハイフンになります
 （`skill_find` → `okf skill-find`）。加えて:
 
 | コマンド | 用途 |

@@ -113,6 +113,17 @@ pub fn is_archived(wiki_rel_path: &str) -> bool {
     para_of(wiki_rel_path) == ParaClass::Archive
 }
 
+/// Whether a wiki-relative path is read at a given depth of the priority
+/// order: 1 = projects only, 2 = + areas, 3 = + resources, 4 = everything.
+///
+/// An unfiled concept is a Resource (see [`para_of`]), so it appears from
+/// depth 3.
+pub fn within_para_depth(wiki_rel_path: &str, depth: i64) -> bool {
+    let class = para_of(wiki_rel_path);
+    let at = PARA_ORDER.iter().position(|c| *c == class).unwrap_or(0) as i64;
+    at < depth
+}
+
 /// Parse a user- or agent-supplied class name, tolerantly.
 ///
 /// Accepts the folder name and the bare number too: an agent that read the tree

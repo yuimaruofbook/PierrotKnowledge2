@@ -17,8 +17,11 @@ use crate::rag::fts::SearchOptions;
 use crate::rag::retrieve::{format_retrieval, RetrieveOptions};
 use crate::shared::js_compat::{ends_with_ascii_ci, js_trim, locale_compare};
 use crate::shared::messages;
+use crate::shared::okf::activity::ActivityFilter;
+use crate::shared::okf::base::is_base_path;
 use crate::shared::okf::concept::is_concept_path;
 use crate::shared::okf::frontmatter::split_frontmatter;
+use crate::shared::okf::lifecycle::parse_lifecycle;
 use crate::shared::okf::loop_::RunStatus;
 use crate::shared::okf::para::{para_of, parse_para_class, ParaClass, PARA_ORDER};
 use crate::shared::okf::workspace_files::{Task, TaskStatus};
@@ -161,7 +164,36 @@ fn filters_from(args: &Args) -> SearchFilters {
     if !prefix.is_empty() {
         filters.path_prefix = Some(prefix);
     }
+    if args.get("include_dead") == Some(&Value::Bool(true)) {
+        filters.include_dead = Some(true);
+    }
     filters
+}
+
+/// `para_depth` and `link_depth`, validated, or the message to fail with.
+///
+/// Rejected rather than clamped: a depth is a scope the caller chose on
+/// purpose, and silently reading a different scope than the one asked for
+/// would return an answer to another question.
+fn range_from(args: &Args) -> std::result::Result<(Option<i64>, Option<i64>), ToolResult> {
+    let check = |key: &str, min: i64, max: i64| -> std::result::Result<Option<i64>, ToolResult> {
+        let value = match args.get(key) {
+            None | Some(Value::Null) => return Ok(None),
+            Some(value) => value,
+        };
+        let whole = match value {
+            Value::Number(n) => n.as_f64().filter(|f| f.fract() == 0.0 && *f >= min as f64 && *f <= max as f64),
+            _ => None,
+        };
+        match whole {
+            Some(f) => Ok(Some(f as i64)),
+            None => Err(fail(format!(
+                "{key} must be an integer from {min} to {max}: {}",
+                js_string(value)
+            ))),
+        }
+    };
+    Ok((check("para_depth", 1, 4)?, check("link_depth", 0, 2)?))
 }
 
 enum DateArg {
@@ -444,14 +476,18 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
             if query.is_empty() {
                 return Ok(fail("'query' is required"));
             }
+            let (para_depth, link_depth) = try_result!(range_from(args));
+            let mut filters = filters_from(args);
+            filters.para_depth = para_depth;
             let result = ws.retrieve(
                 &query,
                 &RetrieveOptions {
-                    filters: filters_from(args),
+                    filters,
                     limit: number_arg(args, "limit"),
                     budget_chars: number_arg(args, "budget_chars"),
                     expand_neighbours: args.get("expand_neighbours") == Some(&Value::Bool(true)),
                     min_content_matches: None,
+                    link_depth,
                 },
             )?;
             Ok(text(format_retrieval(&result)))
@@ -472,12 +508,17 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
                 }
             };
 
+            let (para_depth, link_depth) = try_result!(range_from(args));
+            let mut filters = filters_from(args);
+            filters.para_depth = para_depth;
+
             let pack = ws.context_pack(
                 &task,
                 &RetrieveOptions {
-                    filters: filters_from(args),
+                    filters,
                     limit: number_arg(args, "limit"),
                     budget_chars: number_arg(args, "budget_chars"),
+                    link_depth,
                     ..Default::default()
                 },
                 tier,
@@ -653,6 +694,7 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
                 tags: str_array(args, "tags"),
                 body: Some(str_arg(args, "body")),
                 generated_by: Some(actor.clone()),
+                extra: Vec::new(),
                 now: None,
             });
             ws.write_file(
@@ -698,6 +740,43 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
                 return Ok(text(messages::AUDIT_NO_CHANGES));
             }
             Ok(json_text(&result))
+        }
+
+        "summarize_activity" => {
+            let since = str_arg(args, "since");
+            if !since.is_empty() && !is_iso_date(&since) {
+                return Ok(fail(format!("since must be an ISO date: {since}")));
+            }
+            let until = str_arg(args, "until");
+            if !until.is_empty() && !is_iso_date(&until) {
+                return Ok(fail(format!("until must be an ISO date: {until}")));
+            }
+            if !since.is_empty() && !until.is_empty() && js_trim(&until) < js_trim(&since) {
+                return Ok(fail(format!(
+                    "until must not be before since: {} < {}",
+                    js_trim(&until),
+                    js_trim(&since)
+                )));
+            }
+
+            let actor = str_arg(args, "actor");
+            let by = js_trim(&str_arg(args, "by")).to_string();
+            let result = ws.summarize_activity(
+                &ActivityFilter {
+                    since: (!since.is_empty()).then(|| js_trim(&since).to_string()),
+                    until: (!until.is_empty()).then(|| js_trim(&until).to_string()),
+                    actor: (!actor.is_empty()).then_some(actor),
+                },
+                (!by.is_empty()).then_some(by.as_str()),
+                args.get("save") == Some(&Value::Bool(true)),
+            )?;
+            if result.total == 0 {
+                return Ok(text("No log entries matched the given range or actor."));
+            }
+            if let Some(saved) = result.saved {
+                return Ok(text(format!("Saved {saved} ({} row(s))", result.total)));
+            }
+            Ok(text(result.markdown))
         }
 
         "rebuild_index" => {
@@ -793,6 +872,106 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
             } else {
                 messages::para_already(&path, target.label())
             }))
+        }
+
+        "set_lifecycle" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            let raw = str_arg(args, "lifecycle");
+            let Some(lifecycle) = parse_lifecycle(&raw) else {
+                let shown = if raw.is_empty() { String::new() } else { format!(": {raw}") };
+                return Ok(fail(format!("lifecycle must be product | dead | none{shown}")));
+            };
+
+            let actor = Some(str_arg(args, "actor")).filter(|a| !a.is_empty());
+            let result = ws.set_lifecycle(&path, lifecycle, actor.as_deref().unwrap_or("process:mcp"))?;
+            Ok(text(if result.changed {
+                format!("Set lifecycle of {path} to {}.", lifecycle.as_str())
+            } else {
+                format!("{path} already has lifecycle {}; nothing changed.", lifecycle.as_str())
+            }))
+        }
+
+        "base_list" => Ok(json_text(&ws.base_list()?)),
+
+        "base_query" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            if !is_base_path(&path) {
+                return Ok(fail("'path' must end in .base"));
+            }
+            let limit = match args.get("limit") {
+                None => None,
+                Some(Value::Number(n)) => match n.as_f64().filter(|f| f.fract() == 0.0 && *f >= 1.0) {
+                    Some(f) => Some(f as usize),
+                    None => return Ok(fail("limit must be a positive integer")),
+                },
+                Some(_) => return Ok(fail("limit must be a positive integer")),
+            };
+            let view = Some(str_arg(args, "view")).filter(|v| !v.is_empty());
+            let (result, markdown) = ws.base_query(&path, view.as_deref(), limit)?;
+            let mut out = Map::new();
+            out.insert("path".into(), Value::String(path));
+            out.extend(result.to_map());
+            out.insert("markdown".into(), Value::String(markdown));
+            Ok(json_text(&Value::Object(out)))
+        }
+
+        "base_write" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            let Some(Value::String(content)) = args.get("content") else {
+                return Ok(fail("'content' is required"));
+            };
+            let actor = Some(str_arg(args, "actor")).filter(|a| !a.is_empty());
+            let warnings =
+                ws.base_write(&path, content, Actor::Agent, Some(actor.as_deref().unwrap_or("process:mcp")))?;
+            Ok(text(if warnings.is_empty() {
+                format!("Wrote {path}")
+            } else {
+                format!("Wrote {path}\nWarnings: {}", warnings.join("; "))
+            }))
+        }
+
+        "knowhow_find" => {
+            let task = str_arg(args, "task");
+            if js_trim(&task).is_empty() {
+                return Ok(fail("task is required"));
+            }
+
+            let result = ws.knowhow_find(&task, number_arg(args, "limit").unwrap_or(3), false, &SearchFilters::default())?;
+            if result.ranked.is_empty() {
+                return Ok(text(format!(
+                    "No know-how matched: {task}\nNothing recorded applies yet - when you finish, record what you learned with knowhow_add."
+                )));
+            }
+            Ok(json_text(&result))
+        }
+
+        "knowhow_add" => {
+            let title = js_trim(&str_arg(args, "title")).to_string();
+            if title.is_empty() {
+                return Ok(fail("'title' is required"));
+            }
+            let body = str_arg(args, "body");
+            if js_trim(&body).is_empty() {
+                return Ok(fail("'body' is required"));
+            }
+            let actor = js_trim(&str_arg(args, "actor")).to_string();
+            if actor.is_empty() {
+                return Ok(fail(
+                    "'actor' is required: say which agent is recording this, e.g. process:claude-code",
+                ));
+            }
+
+            let path = ws.knowhow_add(&title, &body, &str_array(args, "tags"), &actor)?;
+            Ok(text(format!("Recorded know-how {path}")))
         }
 
         "list_para" => {
@@ -1022,3 +1201,11 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
 #[cfg(test)]
 #[path = "tools_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tools_features_tests.rs"]
+mod features_tests;
+
+#[cfg(test)]
+#[path = "tools_bases_tests.rs"]
+mod bases_tests;

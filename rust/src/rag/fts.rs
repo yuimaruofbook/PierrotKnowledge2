@@ -17,7 +17,8 @@ use rusqlite::{params, params_from_iter, Connection};
 
 use crate::shared::js_compat::locale_compare;
 use crate::shared::messages::SEARCH_INDEX_CLOSED;
-use crate::shared::okf::para::para_of;
+use crate::shared::okf::lifecycle::lifecycle_weight;
+use crate::shared::okf::para::{para_of, ParaClass, PARA_ORDER};
 use crate::shared::okf::{
     build_match_query, chunk_body, chunk_id, concept_title, find_highlights, make_snippet,
     normalize_for_index, parse_query_terms, QueryMode, SnippetOptions,
@@ -90,6 +91,29 @@ struct ChunkRow {
     path: String,
     title: String,
     r#type: String,
+    tags: String,
+}
+
+/// SQL for `para_depth`, or `None` when every class is in range.
+///
+/// Done in the query rather than after it so a narrow depth still returns a
+/// full page of hits; the same rule, per path, is `within_para_depth`. Depth 3
+/// and up name what to leave out (the unfiled concepts are resources, so they
+/// have no folder to name); depths 1 and 2 name what to keep.
+fn para_depth_clause(depth: i64) -> Option<(String, Vec<String>)> {
+    let d = depth.max(1) as usize;
+    if d >= PARA_ORDER.len() {
+        return None;
+    }
+    let like = |class: &ParaClass| format!("{}/%", class.dir());
+    if d >= 3 {
+        let out = &PARA_ORDER[d..];
+        let sql = out.iter().map(|_| "d.id NOT LIKE ?").collect::<Vec<_>>().join(" AND ");
+        return Some((sql, out.iter().map(like).collect()));
+    }
+    let kept = &PARA_ORDER[..d];
+    let sql = format!("({})", kept.iter().map(|_| "d.id LIKE ?").collect::<Vec<_>>().join(" OR "));
+    Some((sql, kept.iter().map(like).collect()))
 }
 
 /// Choose what a snippet should be built from.
@@ -494,7 +518,7 @@ impl FtsIndex {
         self.remove(&doc.id)?;
 
         let title = concept_title(&doc.id, &doc.frontmatter);
-        let tags: &[String] = doc.frontmatter.tags.as_deref().unwrap_or(&[]);
+        let tags = doc.frontmatter.string_tags();
 
         conn.prepare_cached(
             "INSERT INTO docs (id, path, title, type, tags, mtime) VALUES (?, ?, ?, ?, ?, ?)",
@@ -504,7 +528,7 @@ impl FtsIndex {
             doc.rel_path,
             title,
             doc.frontmatter.r#type,
-            pack_tags(tags),
+            pack_tags(&tags),
             doc.mtime_ms
         ])?;
 
@@ -629,11 +653,11 @@ impl FtsIndex {
             return Ok(Vec::new());
         };
 
-        let mut wheres: Vec<&str> = vec!["chunks_fts MATCH ?"];
+        let mut wheres: Vec<String> = vec!["chunks_fts MATCH ?".to_string()];
         let mut params: Vec<rusqlite::types::Value> = vec![match_expr.into()];
 
         if let Some(t) = options.filters.r#type.as_deref().filter(|t| !t.is_empty()) {
-            wheres.push("d.type = ?");
+            wheres.push("d.type = ?".into());
             params.push(t.to_string().into());
         }
         if let Some(prefix) = options
@@ -642,14 +666,24 @@ impl FtsIndex {
             .as_deref()
             .filter(|p| !p.is_empty())
         {
-            wheres.push("d.path LIKE ?");
+            wheres.push("d.path LIKE ?".into());
             let cleaned: String = prefix.chars().filter(|c| *c != '%' && *c != '_').collect();
             params.push(format!("{cleaned}%").into());
         }
         for tag in options.filters.tags.as_deref().unwrap_or(&[]) {
             // Tags are stored unit-separated, so a LIKE cannot match a partial tag.
-            wheres.push("d.tags LIKE ?");
+            wheres.push("d.tags LIKE ?".into());
             params.push(format!("%{TAG_SEP}{tag}{TAG_SEP}%").into());
+        }
+        // DEAD is retired material: out of every result unless asked for. GLOB
+        // is case-sensitive, so a bundle's own `dead` tag is not hidden.
+        if options.filters.include_dead != Some(true) {
+            wheres.push("d.tags NOT GLOB ?".into());
+            params.push(format!("*{TAG_SEP}DEAD{TAG_SEP}*").into());
+        }
+        if let Some((sql, like_params)) = options.filters.para_depth.and_then(para_depth_clause) {
+            wheres.push(sql);
+            params.extend(like_params.into_iter().map(rusqlite::types::Value::from));
         }
 
         let limit = options.limit.unwrap_or(20).clamp(1, 200);
@@ -664,7 +698,7 @@ impl FtsIndex {
 
         let sql = format!(
             "SELECT c.chunk_id, c.doc_id, c.ord, c.heading_path, c.text,
-                  d.path, d.title, d.type,
+                  d.path, d.title, d.type, d.tags,
                   bm25(chunks_fts, 0, 12.0, 4.0, 1.0) AS score
              FROM chunks_fts
              JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
@@ -686,7 +720,8 @@ impl FtsIndex {
                     path: r.get(5)?,
                     title: r.get(6)?,
                     r#type: r.get(7)?,
-                    score: r.get(8)?,
+                    tags: r.get(8)?,
+                    score: r.get(9)?,
                 })
             })?;
             rows.collect()
@@ -700,6 +735,7 @@ impl FtsIndex {
             .into_iter()
             .map(|row| {
                 let para = para_of(&row.doc_id);
+                let tags: Vec<&str> = unpack_tags(&row.tags).collect();
                 let snippet = make_snippet(
                     &snippet_source(&row, query),
                     query,
@@ -716,8 +752,9 @@ impl FtsIndex {
                         title: row.title,
                         snippet,
                         // PARA is a priority order, so it multiplies relevance
-                        // rather than replacing it.
-                        score: -row.score * para.weight(),
+                        // rather than replacing it. A Product concept adds a
+                        // smaller nudge of the same kind.
+                        score: -row.score * para.weight() * lifecycle_weight(&tags),
                         r#type: row.r#type,
                         heading_path: split_heading(&row.heading_path),
                         para,

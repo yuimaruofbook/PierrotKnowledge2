@@ -166,6 +166,14 @@ export interface SearchFilters {
   tags?: string[];
   /** Restrict to a bundle-relative path prefix. */
   pathPrefix?: string;
+  /** Keep concepts tagged DEAD, which are left out by default. */
+  includeDead?: boolean;
+  /**
+   * Only read PARA classes up to this priority: 1 projects, 2 +areas,
+   * 3 +resources, 4 everything (the default). Unfiled concepts count as
+   * resources, as they do in ranking.
+   */
+  paraDepth?: number;
 }
 
 export interface TagCount {
@@ -186,10 +194,29 @@ export interface RetrievedPassage {
   score: number;
 }
 
+/**
+ * A file reached by following links from the retrieved ones: a pointer with
+ * its one-line description, never a body.
+ */
+export interface LinkedFile {
+  path: string;
+  id: string;
+  title: string;
+  type: string;
+  /** The file's own frontmatter description, when it has one. */
+  description?: string;
+  /** Links followed to get here (1 or 2). */
+  hops: number;
+  /** Path of the file whose link led here, so the chain can be walked back. */
+  from: string;
+}
+
 export interface RetrievalResult {
   query: string;
   passages: RetrievedPassage[];
-  /** Characters of passage text returned. */
+  /** Files reached by `link_depth`; absent when no link was followed. */
+  linked?: LinkedFile[];
+  /** Characters of passage text (and linked descriptions) returned. */
   usedChars: number;
   /** True when the budget cut the result short. */
   truncated: boolean;

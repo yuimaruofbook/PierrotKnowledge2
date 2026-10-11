@@ -11,16 +11,20 @@ import { join } from "path";
 import type {
   BundleInfo,
   ChunkHit,
+  ConceptDocument,
   ConformanceIssue,
   FileNode,
+  LinkedFile,
   ReadFileResult,
   RetrievalResult,
+  SearchFilters,
   SearchHit,
   TagCount,
   WriteFileResult,
 } from "../shared/types";
 import { messages } from "../shared/messages";
-import { reclassify, type ParaClass } from "../shared/okf/para";
+import { reclassify, withinParaDepth, type ParaClass } from "../shared/okf/para";
+import { rankSkills, selectionConfidence } from "../shared/okf/skill-rank";
 import {
   dailyId,
   dailyRelPath,
@@ -37,9 +41,45 @@ import {
   type TaskFile,
   type TaskStatus,
 } from "../shared/okf/workspace-files";
-import { isConceptPath, isoDate, parseLogEntries, type ParsedLogEntry } from "../shared/okf";
+import {
+  ACTIVITY_DIR,
+  ACTIVITY_TITLE,
+  ACTIVITY_TYPE,
+  KNOWHOW_DIR,
+  KNOWHOW_TITLE,
+  KNOWHOW_TYPE,
+  activityRelPath,
+  conceptTitle,
+  deriveDescription,
+  filterActivity,
+  isConceptPath,
+  isoDate,
+  knowhowSlug,
+  lifecycleOf,
+  parseLogEntries,
+  resolveLinkTarget,
+  splitFrontmatter,
+  summarizeActivity,
+  setLifecycleInDocument,
+  withLifecycle,
+  type Lifecycle,
+  type LifecycleChoice,
+  type ParsedLogEntry,
+} from "../shared/okf";
+import {
+  BaseError,
+  isBasePath,
+  listViews,
+  renderBaseMarkdown,
+  runBase,
+  validateBase,
+  type BaseResult,
+  type BaseViewResponse,
+} from "../shared/okf/base";
 import { Bundle } from "./okf/bundle";
-import { skeletonConcept } from "./okf/parser";
+import { baseRowOf, listBasePaths, readBaseFile } from "./okf/bases";
+import { parseBaseYaml } from "./okf/parser";
+import { frontmatterRecord, skeletonConcept } from "./okf/parser";
 import { LOOPS_DIR, RAG_DIR, SKILLS_DIR } from "./okf/paths";
 import { SkillSpace } from "./okf/skills";
 import { LoopSpace } from "./okf/loops";
@@ -50,6 +90,7 @@ import {
   TIER_DEFAULTS,
   groupPassages,
   type ContextPack,
+  type ContextPackKnowhow,
   type ContextTier,
 } from "./rag/context-pack";
 import { BundleWatcher } from "./watch";
@@ -349,9 +390,101 @@ export class Workspace {
     return this.requireFts().searchChunks(query, options);
   }
 
-  /** Assemble budgeted, cited context for an agent. */
+  /**
+   * Assemble budgeted, cited context for an agent.
+   *
+   * `linkDepth` is applied here rather than in the index: following a link
+   * needs the concept graph, which only the bundle has.
+   */
   retrieve(query: string, options: RetrieveOptions = {}): RetrievalResult {
-    return retrieve(this.requireFts(), query, options);
+    const result = retrieve(this.requireFts(), query, options);
+
+    const depth = options.linkDepth ?? 0;
+    if (depth <= 0 || result.passages.length === 0) return result;
+
+    const budget = Math.max(1, options.budgetChars ?? DEFAULT_BUDGET_CHARS);
+    const reached = this.followLinks(
+      [...new Set(result.passages.map((p) => p.id))],
+      depth,
+      budget - result.usedChars,
+      options
+    );
+    return {
+      ...result,
+      linked: reached.linked,
+      usedChars: result.usedChars + reached.usedChars,
+      truncated: result.truncated || reached.truncated,
+    };
+  }
+
+  /**
+   * Walk outgoing links from some files, up to `depth` hops, collecting each
+   * file once as a pointer: path, title and the one-line description.
+   *
+   * Pointers, not bodies, because the point is to show what else is nearby at
+   * a cost the budget can bound; the cost of an entry is its title plus its
+   * description, and the walk stops at the first one that no longer fits.
+   * Filters apply to what is shown: a hidden file (DEAD, past the PARA depth,
+   * outside `type` / `tags` / `path_prefix`) is not listed and not walked through, but is still marked seen so it is
+   * judged once.
+   */
+  private followLinks(
+    startIds: readonly string[],
+    depth: number,
+    budgetLeft: number,
+    filters: SearchFilters
+  ): { linked: LinkedFile[]; usedChars: number; truncated: boolean } {
+    const bundle = this.requireBundle();
+    // Resolved against the ids that exist now, not the `resolved` recorded
+    // when each page was parsed: a link written before its target existed
+    // stays unresolved there until the next reload.
+    const ids = bundle.conceptIds();
+    const seen = new Set(startIds);
+    const linked: LinkedFile[] = [];
+    let used = 0;
+    let frontier = [...startIds];
+
+    for (let hops = 1; hops <= depth; hops++) {
+      const next: string[] = [];
+      for (const id of frontier) {
+        const from = bundle.getConcept(id);
+        if (!from) continue;
+
+        for (const link of from.links) {
+          const resolved = resolveLinkTarget(link.target, from.id, ids);
+          const target = resolved === null ? undefined : bundle.getConcept(resolved);
+          if (!target || seen.has(target.id)) continue;
+          seen.add(target.id);
+
+          if (!filters.includeDead && lifecycleOf(tagsOf(target)) === "dead") continue;
+          if (!matchesFilters(target, filters)) continue;
+          if (filters.paraDepth !== undefined && !withinParaDepth(target.id, filters.paraDepth)) {
+            continue;
+          }
+
+          const title = conceptTitle(target.id, target.frontmatter);
+          const description = target.frontmatter.description;
+          const text = typeof description === "string" && description.trim() ? description : undefined;
+          const cost = title.length + (text?.length ?? 0);
+          if (used + cost > budgetLeft) return { linked, usedChars: used, truncated: true };
+
+          used += cost;
+          linked.push({
+            path: target.relPath,
+            id: target.id,
+            title,
+            type: target.frontmatter.type,
+            ...(text ? { description: text } : {}),
+            hops,
+            from: from.relPath,
+          });
+          next.push(target.id);
+        }
+      }
+      frontier = next;
+    }
+
+    return { linked, usedChars: used, truncated: false };
   }
 
   /**
@@ -384,6 +517,32 @@ export class Workspace {
 
     const found = await this.requireSkills().find(task, 3);
 
+    // Know-how sits outside PARA, so it counts as a resource: a narrow
+    // `paraDepth` that stops short of resources leaves it out with the rest.
+    // It follows the caller's filters like any other file, and each entry is
+    // paid for from the same budget as the passages (title + description, as a
+    // linked pointer is), so the pack never outgrows `budgetChars`.
+    const knowhow: ContextPackKnowhow[] = [];
+    let usedChars = retrieval.usedChars;
+    let truncated = retrieval.truncated;
+    if (options.paraDepth === undefined || withinParaDepth(KNOWHOW_DIR, options.paraDepth)) {
+      for (const r of this.knowhowFind(task, 3, options.includeDead === true, options).ranked) {
+        const cost = r.title.length + r.description.length;
+        if (usedChars + cost > budgetChars) {
+          truncated = true;
+          break;
+        }
+        usedChars += cost;
+        knowhow.push({
+          title: r.title,
+          description: r.description,
+          path: r.path,
+          by: r.by,
+          score: r.score,
+        });
+      }
+    }
+
     return {
       task,
       ...(options.tier ? { tier: options.tier } : {}),
@@ -394,8 +553,10 @@ export class Workspace {
         description: r.description,
         score: r.score,
       })),
-      usedChars: retrieval.usedChars,
-      truncated: retrieval.truncated,
+      knowhow,
+      linked: retrieval.linked ?? [],
+      usedChars,
+      truncated,
     };
   }
 
@@ -433,6 +594,316 @@ export class Workspace {
     return { total: entries.length, ...(opts.since ? { since: opts.since } : {}), actors };
   }
 
+  // ---- lifecycle -----------------------------------------------------------
+
+  /**
+   * Mark a concept Product or DEAD, or clear the mark.
+   *
+   * An edit of the frontmatter `tags` through the normal write path, so the
+   * layer rules, the log row and the reindex all apply. Nothing is moved or
+   * deleted: DEAD only changes what search and packs show by default.
+   */
+  async setLifecycle(
+    path: string,
+    to: LifecycleChoice,
+    actor = "process:mcp"
+  ): Promise<{ path: string; lifecycle: LifecycleChoice; changed: boolean }> {
+    const file = await this.requireBundle().readFile(path);
+    if (file.binary || !file.concept) {
+      throw new Error(`${path} is not a concept document, so it has no tags to change`);
+    }
+
+    const { yaml } = splitFrontmatter(file.content);
+    // The frontmatter as written, never the defaulted one: rewriting a block
+    // that could not be read would replace it with a guess.
+    const record = frontmatterRecord(yaml);
+    if (!record) {
+      throw new Error(
+        `${path} has no readable YAML frontmatter mapping; add one before setting a lifecycle`
+      );
+    }
+
+    const current = record.tags ?? [];
+    if (!Array.isArray(current)) throw new Error(`tags in ${path} is not a list`);
+
+    const next = withLifecycle(current, to);
+    if (JSON.stringify(next) === JSON.stringify(current)) {
+      return { path, lifecycle: to, changed: false };
+    }
+
+    // Only the `tags` lines change: a whole-block rewrite would drop the
+    // author's comments and re-quote values like `version: 1.10`.
+    const edited = setLifecycleInDocument(file.content, current, to);
+    if (edited === null) {
+      throw new Error(`tags in ${path} are written in a form that cannot be edited safely; change them by hand`);
+    }
+
+    await this.writeFile(path, edited, {
+      by: "agent",
+      actor,
+      action: "write",
+      note: `lifecycle: ${to}`,
+    });
+    return { path, lifecycle: to, changed: true };
+  }
+
+  // ---- know-how --------------------------------------------------------------
+
+  /** Create a wiki sub-folder's index.md on first use, without a watcher echo. */
+  private async ensureFolder(dir: string, title: string): Promise<void> {
+    const created = await this.requireBundle().ensureFolderIndex(dir, title);
+    if (created) this.markSelfWrite(created);
+  }
+
+  /** Bundle-relative path for a wiki-relative one. */
+  private wikiPath(wikiRel: string): string {
+    const { wikiDir } = this.requireBundle().paths;
+    return wikiDir ? `${wikiDir}/${wikiRel}` : wikiRel;
+  }
+
+  /**
+   * Record a lesson for the agents that come next.
+   *
+   * One file per lesson under `knowhow/`, named for its title; a repeated
+   * title gets a numbered name rather than overwriting what another agent
+   * wrote. `by` is stored beside `generated.by` so the lesson's source is a
+   * first-class field a reader can filter on.
+   */
+  async knowhowAdd(input: {
+    title: string;
+    body: string;
+    tags?: string[];
+    actor: string;
+  }): Promise<{ path: string }> {
+    const bundle = this.requireBundle();
+    await this.ensureFolder(KNOWHOW_DIR, KNOWHOW_TITLE);
+
+    const slug = knowhowSlug(input.title);
+    let path = this.wikiPath(`${KNOWHOW_DIR}/${slug}.md`);
+    for (let n = 2; await bundle.exists(path); n++) {
+      path = this.wikiPath(`${KNOWHOW_DIR}/${slug}-${n}.md`);
+    }
+
+    const description = deriveDescription(input.body);
+    await this.writeFile(
+      path,
+      skeletonConcept({
+        type: KNOWHOW_TYPE,
+        title: input.title,
+        ...(description ? { description } : {}),
+        tags: input.tags ?? [],
+        body: input.body,
+        generatedBy: input.actor,
+        extra: { by: input.actor },
+      }),
+      { by: "agent", actor: input.actor, action: "create" }
+    );
+    return { path };
+  }
+
+  /**
+   * Rank recorded know-how against a task, as `skill_find` ranks skills.
+   *
+   * Cheap by design: titles, descriptions, scores and who recorded each, no
+   * bodies. DEAD lessons are retired and not offered unless asked for. The
+   * candidates are put in id order first so equal scores break the same way
+   * on every run.
+   */
+  knowhowFind(
+    task: string,
+    limit = 3,
+    includeDead = false,
+    filters: SearchFilters = {}
+  ): {
+    ranked: Array<{
+      title: string;
+      path: string;
+      description: string;
+      by: string;
+      score: number;
+      matched: string[];
+    }>;
+    confidence: "high" | "medium" | "low";
+  } {
+    const prefix = `${KNOWHOW_DIR}/`;
+    const candidates = this.requireBundle()
+      .allConcepts()
+      .filter((doc) => doc.id.startsWith(prefix))
+      .filter((doc) => includeDead || lifecycleOf(tagsOf(doc)) !== "dead")
+      .filter((doc) => matchesFilters(doc, filters))
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((doc) => {
+        const generated = doc.frontmatter.generated as { by?: unknown } | undefined;
+        const by = doc.frontmatter.by;
+        return {
+          name: conceptTitle(doc.id, doc.frontmatter),
+          description:
+            typeof doc.frontmatter.description === "string" ? doc.frontmatter.description : "",
+          tags: tagsOf(doc),
+          path: doc.relPath,
+          by: typeof by === "string" ? by : typeof generated?.by === "string" ? generated.by : "",
+        };
+      });
+
+    const ranked = rankSkills(task, candidates, {
+      limit: Math.max(1, Math.min(Math.trunc(limit), 20)),
+    });
+    return {
+      ranked: ranked.map((r) => ({
+        title: r.skill.name,
+        path: r.skill.path,
+        description: r.skill.description,
+        by: r.skill.by,
+        score: Math.round(r.score * 100) / 100,
+        matched: r.matched,
+      })),
+      confidence: selectionConfidence(ranked),
+    };
+  }
+
+  // ---- activity ----------------------------------------------------------------
+
+  /**
+   * Summarise log.md as a page whose every line cites a log row.
+   *
+   * With `save` it is also written as an `ActivitySummary` concept through the
+   * normal write path, so it is searchable, logged and attributable like any
+   * other page. Nothing is written when no row matched: an empty summary would
+   * only be a file that claims nothing.
+   */
+  async summarizeActivity(
+    opts: { since?: string; until?: string; actor?: string; by?: string; save?: boolean } = {}
+  ): Promise<{ total: number; markdown: string; saved?: string }> {
+    const bundle = this.requireBundle();
+    const filter = {
+      ...(opts.since ? { since: opts.since } : {}),
+      ...(opts.until ? { until: opts.until } : {}),
+      ...(opts.actor ? { actor: opts.actor } : {}),
+    };
+
+    const entries = filterActivity(parseLogEntries(await bundle.readLog()), filter);
+    const summary = summarizeActivity(entries, {
+      ...filter,
+      source: bundle.paths.toRel(bundle.paths.logMdPath),
+    });
+    if (!summary) return { total: 0, markdown: "" };
+
+    const markdown = `# ${summary.title}\n\n${summary.body}`;
+    if (!opts.save) return { total: summary.total, markdown };
+
+    // Whoever ran the tool is credited; the actor filter only narrows the rows.
+    const actor = opts.by?.trim() || "process:okf";
+    const path = this.wikiPath(activityRelPath(summary.from, summary.to, opts.actor));
+    const existed = await bundle.exists(path);
+
+    await this.ensureFolder(ACTIVITY_DIR, ACTIVITY_TITLE);
+    await this.writeFile(
+      path,
+      skeletonConcept({
+        type: ACTIVITY_TYPE,
+        title: summary.title,
+        description: summary.description,
+        tags: ["activity"],
+        body: summary.body,
+        generatedBy: actor,
+      }),
+      { by: "agent", actor, action: existed ? "write" : "create" }
+    );
+    return { total: summary.total, markdown, saved: path };
+  }
+
+  // ---- bases -------------------------------------------------------------------
+
+  /** Every `.base` file with the views it offers, or why it cannot be read. */
+  async baseList(): Promise<Array<{ path: string; views: Array<{ name: string; type: string }>; error?: string }>> {
+    const bundle = this.requireBundle();
+    const out: Array<{ path: string; views: Array<{ name: string; type: string }>; error?: string }> = [];
+    for (const path of await listBasePaths(bundle)) {
+      const file = await readBaseFile(bundle, path).catch(() => null);
+      if (!file) continue;
+      if (!file.ok) {
+        out.push({ path, views: [], error: file.error });
+        continue;
+      }
+      const { errors } = validateBase(file.value);
+      out.push({
+        path,
+        views: listViews(file.value),
+        ...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+      });
+    }
+    return out;
+  }
+
+  /** One view of a base over the bundle's concepts. Reads the file afresh every time. */
+  async baseQuery(path: string, view?: string, limit?: number): Promise<BaseResult & { markdown: string }> {
+    const bundle = this.requireBundle();
+    const file = await readBaseFile(bundle, path);
+    if (!file.ok) throw new BaseError(file.error);
+    const result = runBase(file.value, bundle.allConcepts().map(baseRowOf), {
+      ...(view !== undefined ? { view } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      now: Date.now(),
+    });
+    return { ...result, markdown: renderBaseMarkdown(result) };
+  }
+
+  /**
+   * What the interface shows for a `.base` file: its views, and one of them run.
+   *
+   * Failures come back as a message instead of a throw, so the view switcher
+   * and the raw-YAML toggle stay usable while the file is being fixed.
+   */
+  async baseView(path: string, view?: string): Promise<BaseViewResponse> {
+    const bundle = this.requireBundle();
+    let file;
+    try {
+      file = await readBaseFile(bundle, path);
+    } catch (error) {
+      return { views: [], error: error instanceof Error ? error.message : String(error) };
+    }
+    if (!file.ok) return { views: [], error: file.error };
+    const views = listViews(file.value);
+    try {
+      const result = runBase(file.value, bundle.allConcepts().map(baseRowOf), {
+        ...(view !== undefined ? { view } : {}),
+        now: Date.now(),
+      });
+      return { views, result };
+    } catch (error) {
+      return { views, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  /**
+   * Validate, then write exactly the text given: unknown keys and the author's
+   * formatting survive because nothing is re-serialised. Returns the warnings.
+   */
+  async baseWrite(
+    path: string,
+    content: string,
+    opts: { by: "human" | "agent"; actor?: string }
+  ): Promise<string[]> {
+    const bundle = this.requireBundle();
+    if (!isBasePath(path)) throw new Error("'path' must end in .base");
+    const abs = bundle.paths.resolve(path);
+    const rel = bundle.paths.toRel(abs);
+    if (bundle.paths.layerOf(rel) !== "wiki") {
+      throw new Error(`A .base file must live under wiki/: ${path}`);
+    }
+    // In a flat bundle the wiki layer is the whole folder, so the layer check alone
+    // would let a base into .okf/, .git/ or any other hidden place.
+    if (rel.split("/").some((segment) => segment === ".." || segment.startsWith("."))) {
+      throw new Error(`A .base file cannot live in a hidden folder: ${path}`);
+    }
+    const parsed = parseBaseYaml(content);
+    if (!parsed.ok) throw new Error("Invalid base, nothing written: the content is not valid YAML");
+    const found = validateBase(parsed.value);
+    if (found.errors.length > 0) throw new Error(`Invalid base, nothing written: ${found.errors.join("; ")}`);
+    await this.writeFile(path, content, { by: opts.by, ...(opts.actor ? { actor: opts.actor } : {}) });
+    return found.warnings;
+  }
+
   tags(): TagCount[] {
     return this.requireFts().tags();
   }
@@ -442,18 +913,31 @@ export class Workspace {
   }
 
   /** Every concept id and title, for the quick switcher. */
-  listConcepts(): Array<{ id: string; path: string; title: string; type: string }> {
+  listConcepts(): Array<{
+    id: string;
+    path: string;
+    title: string;
+    type: string;
+    lifecycle?: Lifecycle;
+  }> {
     return this.requireBundle()
       .allConcepts()
-      .map((doc) => ({
-        id: doc.id,
-        path: doc.relPath,
-        title:
-          typeof doc.frontmatter.title === "string" && doc.frontmatter.title.trim()
-            ? doc.frontmatter.title
-            : doc.id,
-        type: doc.frontmatter.type,
-      }))
+      .map((doc) => {
+        const lifecycle = lifecycleOf(tagsOf(doc));
+        return {
+          id: doc.id,
+          path: doc.relPath,
+          title:
+            typeof doc.frontmatter.title === "string" && doc.frontmatter.title.trim()
+              ? doc.frontmatter.title
+              : doc.id,
+          type: doc.frontmatter.type,
+          // Listed even when DEAD: this is the inventory, and a retired note
+          // must stay visible here to be found and revived. Only a marked
+          // concept carries the key, so an unmarked entry looks as it always did.
+          ...(lifecycle === "none" ? {} : { lifecycle }),
+        };
+      })
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
@@ -736,6 +1220,32 @@ export interface TaskInput {
   para?: ParaClass;
   due?: string;
   note?: string;
+}
+
+/** A concept's tags that are strings, which is all the index and lifecycle read. */
+function tagsOf(doc: ConceptDocument): string[] {
+  const tags: unknown = doc.frontmatter.tags;
+  return Array.isArray(tags) ? tags.filter((t): t is string => typeof t === "string") : [];
+}
+
+/** ASCII-only lower-casing: the fold SQLite's LIKE applies in the index filters. */
+function asciiLower(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/**
+ * Whether a concept passes the `type` / `tags` / `path_prefix` filters, with
+ * the same rules the index applies to searches (so a link or a know-how note
+ * is held to what a passage would be).
+ */
+function matchesFilters(doc: ConceptDocument, filters: SearchFilters): boolean {
+  if (filters.type && doc.frontmatter.type !== filters.type) return false;
+  if (filters.pathPrefix) {
+    const prefix = asciiLower(filters.pathPrefix.replace(/[%_]/g, ""));
+    if (!asciiLower(doc.relPath).startsWith(prefix)) return false;
+  }
+  const tags = tagsOf(doc).map(asciiLower);
+  return (filters.tags ?? []).every((tag) => tags.includes(asciiLower(tag)));
 }
 
 /** Concept id for a bundle-relative path, or `""` for non-concept files. */

@@ -15,36 +15,56 @@ use crate::okf::bundle::{
 use crate::okf::error::{OkfError, Result};
 use crate::okf::loops::{EndOptions, LoopEndResult, LoopSpace, LoopStartResult, StartOptions};
 use crate::okf::nodepath;
-use crate::okf::parser::{skeleton_concept, ConceptSkeletonOptions};
+use crate::okf::parser::{
+    frontmatter_record, parse_yaml, skeleton_concept, ConceptSkeletonOptions,
+};
 use crate::okf::paths::{Actor, LOOPS_DIR, RAG_DIR, SKILLS_DIR};
 use crate::okf::scaffold::{scaffold_bundle, ScaffoldResult};
 use crate::okf::skills::SkillSpace;
 use crate::rag::context_pack::{
-    group_passages, ContextPack, ContextPackSkill, ContextTier,
+    group_passages, ContextPack, ContextPackKnowhow, ContextPackSkill, ContextTier,
 };
 use crate::rag::fts::{FtsError, FtsIndex, SearchOptions};
 use crate::rag::retrieve::{retrieve, RetrieveOptions, DEFAULT_BUDGET_CHARS};
-use crate::shared::js_compat::{js_trim, locale_compare};
+use crate::shared::js_compat::{js_round, js_trim, locale_compare, serialize_js_f64, utf16_len};
 use crate::shared::messages;
-use crate::shared::okf::concept::{concept_id_from_rel_path, is_concept_path};
+use crate::shared::okf::activity::{
+    activity_rel_path, filter_activity, summarize_activity as summarize_rows, ActivityFilter,
+    ACTIVITY_DIR, ACTIVITY_TITLE, ACTIVITY_TYPE,
+};
+use crate::shared::okf::base::{
+    is_base_path, list_views, render_base_markdown, run_base, validate_base, BaseResult, RunOptions, BASE_EXT,
+};
+use crate::shared::okf::base_expr::BaseRow;
+use crate::shared::okf::concept::{concept_id_from_rel_path, concept_title, is_concept_path};
+use crate::shared::okf::frontmatter::split_frontmatter;
+use crate::shared::okf::knowhow::{
+    derive_description, knowhow_slug_default, KNOWHOW_DIR, KNOWHOW_TITLE, KNOWHOW_TYPE,
+};
+use crate::shared::okf::lifecycle::{
+    lifecycle_of, set_lifecycle_in_document, with_lifecycle, Lifecycle, LifecycleChoice,
+};
 use crate::shared::okf::daily::{
     daily_id, daily_rel_path, daily_template, daily_title, mark_transferred, pending_task_lines,
 };
+use crate::shared::okf::links::resolve_link_target;
 use crate::shared::okf::loop_::LoopSnapshot;
-use crate::shared::okf::para::{reclassify, ParaClass};
+use crate::shared::okf::para::{reclassify, within_para_depth, ParaClass};
 use crate::shared::okf::reserved::{iso_date_of, parse_log_entries, ParsedLogEntry};
+use crate::shared::okf::skill_rank::{rank_skills, selection_confidence, Confidence, Rankable};
 use crate::shared::okf::workspace_files::{
     next_task_id, open_tasks, render_human_template, Task, TaskFile, TaskStatus,
 };
 use crate::shared::types::{
-    BundleInfo, ChunkHit, ConformanceIssue, FileNode, ReadFileResult, RetrievalResult, SearchHit,
-    TagCount, WriteFileResult,
+    Layer, BundleInfo, ChunkHit, ConceptDocument, ConformanceIssue, FileNode, LinkedFile, ReadFileResult,
+    RetrievalResult, SearchFilters, SearchHit, TagCount, WriteFileResult,
 };
 use crate::watch::BundleWatcher;
 use chrono::{DateTime, Local, Utc};
 use indexmap::IndexMap;
 use serde::Serialize;
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -104,6 +124,101 @@ pub struct ConceptListing {
     pub path: String,
     pub title: String,
     pub r#type: String,
+    /// Only a marked concept carries the key, so an unmarked entry looks as
+    /// it always did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<&'static str>,
+}
+
+/// `setLifecycle` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetLifecycleResult {
+    pub path: String,
+    pub lifecycle: LifecycleChoice,
+    pub changed: bool,
+}
+
+/// One know-how note in a `knowhow_find` answer: titles, descriptions, scores
+/// and who recorded it, never the body.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KnowhowRanked {
+    pub title: String,
+    pub path: String,
+    pub description: String,
+    pub by: String,
+    #[serde(serialize_with = "serialize_js_f64")]
+    pub score: f64,
+    pub matched: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct KnowhowFound {
+    pub ranked: Vec<KnowhowRanked>,
+    pub confidence: Confidence,
+}
+
+/// `summarizeActivity` result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActivityResult {
+    pub total: usize,
+    pub markdown: String,
+    pub saved: Option<String>,
+}
+
+struct KnowhowCandidate {
+    name: String,
+    description: String,
+    tags: Vec<String>,
+    path: String,
+    by: String,
+}
+
+impl Rankable for KnowhowCandidate {
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn description(&self) -> &str {
+        &self.description
+    }
+    fn tags(&self) -> &[String] {
+        &self.tags
+    }
+}
+
+struct FollowedLinks {
+    linked: Vec<LinkedFile>,
+    used_chars: u64,
+    truncated: bool,
+}
+
+/// A concept tags that are strings, which is all the index and lifecycle
+/// read.
+fn tags_of(doc: &ConceptDocument) -> Vec<String> {
+    doc.frontmatter.string_tags()
+}
+
+/// Whether a concept passes the `type` / `tags` / `path_prefix` filters, with
+/// the same rules the index applies to searches (so a link or a know-how note
+/// is held to what a passage would be).
+fn matches_filters(doc: &ConceptDocument, filters: &SearchFilters) -> bool {
+    if let Some(kind) = filters.r#type.as_deref().filter(|t| !t.is_empty()) {
+        if doc.frontmatter.r#type != kind {
+            return false;
+        }
+    }
+    if let Some(prefix) = filters.path_prefix.as_deref().filter(|p| !p.is_empty()) {
+        let prefix = prefix.replace(['%', '_'], "").to_ascii_lowercase();
+        if !doc.rel_path.to_ascii_lowercase().starts_with(&prefix) {
+            return false;
+        }
+    }
+    let tags: Vec<String> = tags_of(doc).iter().map(|t| t.to_ascii_lowercase()).collect();
+    filters
+        .tags
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .all(|tag| tags.contains(&tag.to_ascii_lowercase()))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -505,8 +620,122 @@ impl Workspace {
     }
 
     /// Assemble budgeted, cited context for an agent.
+    ///
+    /// `link_depth` is applied here rather than in the index: following a link
+    /// needs the concept graph, which only the bundle has.
     pub fn retrieve(&self, query: &str, options: &RetrieveOptions) -> Result<RetrievalResult> {
-        retrieve(self.require_fts()?, query, options).map_err(fts_err)
+        let mut result = retrieve(self.require_fts()?, query, options).map_err(fts_err)?;
+
+        let depth = options.link_depth.unwrap_or(0);
+        if depth <= 0 || result.passages.is_empty() {
+            return Ok(result);
+        }
+
+        let budget = options.budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS).max(1);
+        let mut seen: HashSet<&str> = HashSet::new();
+        let start: Vec<String> = result
+            .passages
+            .iter()
+            .filter(|p| seen.insert(p.id.as_str()))
+            .map(|p| p.id.clone())
+            .collect();
+        let reached = self.follow_links(
+            &start,
+            depth,
+            budget - result.used_chars as i64,
+            &options.filters,
+        )?;
+        result.linked = Some(reached.linked);
+        result.used_chars += reached.used_chars;
+        result.truncated = result.truncated || reached.truncated;
+        Ok(result)
+    }
+
+    /// Walk outgoing links from some files, up to `depth` hops, collecting
+    /// each file once as a pointer: path, title and the one-line description.
+    ///
+    /// Pointers, not bodies, because the point is to show what else is nearby
+    /// at a cost the budget can bound; the cost of an entry is its title plus
+    /// its description, and the walk stops at the first one that no longer
+    /// fits. Filters apply to what is shown: a hidden file (DEAD, past the
+    /// PARA depth, outside `type` / `tags` / `path_prefix`) is not listed and not walked through, but is still marked
+    /// seen so it is judged once.
+    fn follow_links(
+        &self,
+        start_ids: &[String],
+        depth: i64,
+        budget_left: i64,
+        filters: &SearchFilters,
+    ) -> Result<FollowedLinks> {
+        let bundle = self.require_bundle()?;
+        // Resolved against the ids that exist now, not the `resolved` recorded
+        // when each page was parsed: a link written before its target existed
+        // stays unresolved there until the next reload.
+        let ids = bundle.concept_ids();
+        let mut seen: HashSet<String> = start_ids.iter().cloned().collect();
+        let mut linked: Vec<LinkedFile> = Vec::new();
+        let mut used: u64 = 0;
+        let mut frontier: Vec<String> = start_ids.to_vec();
+
+        for hops in 1..=depth {
+            let mut next: Vec<String> = Vec::new();
+            for id in &frontier {
+                let Some(from) = bundle.get_concept(id) else { continue };
+
+                for link in &from.links {
+                    let Some(target) = resolve_link_target(&link.target, &from.id, Some(&ids))
+                        .and_then(|r| bundle.get_concept(&r))
+                    else {
+                        continue;
+                    };
+                    if !seen.insert(target.id.clone()) {
+                        continue;
+                    }
+
+                    if filters.include_dead != Some(true)
+                        && lifecycle_of(&tags_of(target)) == LifecycleChoice::Set(Lifecycle::Dead)
+                    {
+                        continue;
+                    }
+                    if !matches_filters(target, filters) {
+                        continue;
+                    }
+                    if let Some(para_depth) = filters.para_depth {
+                        if !within_para_depth(&target.id, para_depth) {
+                            continue;
+                        }
+                    }
+
+                    let title = concept_title(&target.id, &target.frontmatter);
+                    let description = target
+                        .frontmatter
+                        .description
+                        .as_deref()
+                        .filter(|d| !js_trim(d).is_empty())
+                        .map(str::to_string);
+                    let cost =
+                        (utf16_len(&title) + description.as_deref().map_or(0, utf16_len)) as u64;
+                    if used as i64 + cost as i64 > budget_left {
+                        return Ok(FollowedLinks { linked, used_chars: used, truncated: true });
+                    }
+
+                    used += cost;
+                    linked.push(LinkedFile {
+                        path: target.rel_path.clone(),
+                        id: target.id.clone(),
+                        title,
+                        r#type: target.frontmatter.r#type.clone(),
+                        description,
+                        hops: hops as u32,
+                        from: from.rel_path.clone(),
+                    });
+                    next.push(target.id.clone());
+                }
+            }
+            frontier = next;
+        }
+
+        Ok(FollowedLinks { linked, used_chars: used, truncated: false })
     }
 
     /// Assemble a context pack: the minimal file set for a task, plus the
@@ -543,6 +772,39 @@ impl Workspace {
 
         let found = self.require_skills_mut()?.find(task, Some(3));
 
+        // Know-how sits outside PARA, so it counts as a resource: a narrow
+        // `para_depth` that stops short of resources leaves it out with the
+        // rest. It follows the caller's filters like any other file, and each
+        // entry is paid for from the same budget as the passages (title +
+        // description, as a linked pointer is), so the pack never outgrows
+        // `budget_chars`.
+        let mut knowhow: Vec<ContextPackKnowhow> = Vec::new();
+        let mut used_chars = retrieval.used_chars;
+        let mut truncated = retrieval.truncated;
+        if options.filters.para_depth.is_none_or(|depth| within_para_depth(KNOWHOW_DIR, depth)) {
+            let found = self.knowhow_find(
+                task,
+                3,
+                options.filters.include_dead == Some(true),
+                &options.filters,
+            )?;
+            for r in found.ranked {
+                let cost = (utf16_len(&r.title) + utf16_len(&r.description)) as i64;
+                if used_chars as i64 + cost > budget_chars {
+                    truncated = true;
+                    break;
+                }
+                used_chars += cost as u64;
+                knowhow.push(ContextPackKnowhow {
+                    title: r.title,
+                    description: r.description,
+                    path: r.path,
+                    by: r.by,
+                    score: r.score,
+                });
+            }
+        }
+
         Ok(ContextPack {
             task: task.to_string(),
             tier,
@@ -557,8 +819,10 @@ impl Workspace {
                     score: r.score,
                 })
                 .collect(),
-            used_chars: retrieval.used_chars,
-            truncated: retrieval.truncated,
+            knowhow,
+            linked: retrieval.linked.unwrap_or_default(),
+            used_chars,
+            truncated,
         })
     }
 
@@ -596,6 +860,137 @@ impl Workspace {
         })
     }
 
+    // ---- bases -------------------------------------------------------------------
+
+    /// Every `.base` file with the views it offers, or why it cannot be read.
+    pub fn base_list(&mut self) -> Result<Vec<Value>> {
+        let mut paths: Vec<String> = Vec::new();
+        {
+            let bundle = self.require_bundle()?;
+            fn walk(nodes: &[FileNode], out: &mut Vec<String>) {
+                for node in nodes {
+                    match &node.children {
+                        Some(children) => walk(children, out),
+                        None => {
+                            if node.name.to_lowercase().ends_with(BASE_EXT) {
+                                out.push(node.path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            walk(&bundle.list_dir(&bundle.paths.wiki_dir, true)?, &mut paths);
+        }
+        paths.sort_by(|a, b| locale_compare(a, b));
+
+        let mut out = Vec::new();
+        for path in paths {
+            let Ok(text) = self.read_base_text(&path) else { continue };
+            let mut entry = serde_json::Map::new();
+            entry.insert("path".into(), Value::String(path));
+            let Some(value) = parse_yaml(&text) else {
+                entry.insert("views".into(), Value::Array(Vec::new()));
+                entry.insert("error".into(), Value::String("the content is not valid YAML".into()));
+                out.push(Value::Object(entry));
+                continue;
+            };
+            let views = list_views(&value)
+                .into_iter()
+                .map(|(name, kind)| {
+                    let mut v = serde_json::Map::new();
+                    v.insert("name".into(), Value::String(name));
+                    v.insert("type".into(), Value::String(kind));
+                    Value::Object(v)
+                })
+                .collect();
+            entry.insert("views".into(), Value::Array(views));
+            let errors = validate_base(&value).errors;
+            if !errors.is_empty() {
+                entry.insert("error".into(), Value::String(errors.join("; ")));
+            }
+            out.push(Value::Object(entry));
+        }
+        Ok(out)
+    }
+
+    /// The text of one `.base` file. A missing file is an error; bad YAML is not.
+    fn read_base_text(&mut self, path: &str) -> Result<String> {
+        if !is_base_path(path) {
+            return Err(OkfError::message("'path' must end in .base"));
+        }
+        let bundle = self.require_bundle_mut()?;
+        bundle.paths.resolve(path)?; // a path outside the bundle fails here, with the usual message
+        match bundle.read_file(path) {
+            Ok(file) if file.binary != Some(true) => Ok(file.content),
+            _ => Err(OkfError::message(format!("{path} not found"))),
+        }
+    }
+
+    /// One view of a base over the bundle's concepts. Reads the file afresh every time.
+    pub fn base_query(&mut self, path: &str, view: Option<&str>, limit: Option<usize>) -> Result<(BaseResult, String)> {
+        let text = self.read_base_text(path)?;
+        let Some(value) = parse_yaml(&text) else {
+            return Err(OkfError::message("the content is not valid YAML"));
+        };
+        let rows: Vec<BaseRow> = self
+            .require_bundle()?
+            .all_concepts()
+            .into_iter()
+            .map(|doc| BaseRow {
+                path: doc.rel_path.clone(),
+                wiki_path: format!("{}.md", doc.id),
+                id: doc.id.clone(),
+                mtime_ms: doc.mtime_ms,
+                frontmatter: doc.frontmatter.to_map(),
+                links: doc.links.iter().map(|l| (l.target.clone(), l.resolved.clone())).collect(),
+            })
+            .collect();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0.0, |d| d.as_millis() as f64);
+        let result = run_base(&value, &rows, &RunOptions { view, limit, now }).map_err(OkfError::message)?;
+        let markdown = render_base_markdown(&result);
+        Ok((result, markdown))
+    }
+
+    /// Validate, then write exactly the text given: unknown keys and the
+    /// author's formatting survive because nothing is re-serialised. Returns
+    /// the warnings.
+    pub fn base_write(&mut self, path: &str, content: &str, by: Actor, actor: Option<&str>) -> Result<Vec<String>> {
+        if !is_base_path(path) {
+            return Err(OkfError::message("'path' must end in .base"));
+        }
+        {
+            let bundle = self.require_bundle()?;
+            let abs = bundle.paths.resolve(path)?;
+            let rel = bundle.paths.to_rel(&abs);
+            if bundle.paths.layer_of(&rel) != Some(Layer::Wiki) {
+                return Err(OkfError::message(format!("A .base file must live under wiki/: {path}")));
+            }
+            // In a flat bundle the wiki layer is the whole folder, so the layer check alone
+            // would let a base into .okf/, .git/ or any other hidden place.
+            if rel.split('/').any(|segment| segment == ".." || segment.starts_with('.')) {
+                return Err(OkfError::message(format!("A .base file cannot live in a hidden folder: {path}")));
+            }
+        }
+        let Some(value) = parse_yaml(content) else {
+            return Err(OkfError::message("Invalid base, nothing written: the content is not valid YAML"));
+        };
+        let found = validate_base(&value);
+        if !found.errors.is_empty() {
+            return Err(OkfError::message(format!(
+                "Invalid base, nothing written: {}",
+                found.errors.join("; ")
+            )));
+        }
+        self.write_file(
+            path,
+            content,
+            &WriteOptions { by: Some(by), actor: actor.map(str::to_string), ..Default::default() },
+        )?;
+        Ok(found.warnings)
+    }
+
     pub fn tags(&self) -> Result<Vec<TagCount>> {
         self.require_fts()?.tags().map_err(fts_err)
     }
@@ -618,10 +1013,266 @@ impl Workspace {
                     _ => doc.id.clone(),
                 },
                 r#type: doc.frontmatter.r#type.clone(),
+                // Listed even when DEAD: this is the inventory, and a retired
+                // note must stay visible here to be found and revived.
+                lifecycle: match lifecycle_of(&tags_of(doc)) {
+                    LifecycleChoice::None => None,
+                    LifecycleChoice::Set(l) => Some(l.as_str()),
+                },
             })
             .collect();
         list.sort_by(|a, b| locale_compare(&a.id, &b.id));
         Ok(list)
+    }
+
+    // ---- lifecycle -----------------------------------------------------------
+
+    /// Mark a concept Product or DEAD, or clear the mark.
+    ///
+    /// An edit of the frontmatter `tags` through the normal write path, so the
+    /// layer rules, the log row and the reindex all apply. Nothing is moved or
+    /// deleted: DEAD only changes what search and packs show by default.
+    pub fn set_lifecycle(
+        &mut self,
+        path: &str,
+        to: LifecycleChoice,
+        actor: &str,
+    ) -> Result<SetLifecycleResult> {
+        let file = self.require_bundle_mut()?.read_file(path)?;
+        if file.binary == Some(true) || file.concept.is_none() {
+            return Err(OkfError::message(format!(
+                "{path} is not a concept document, so it has no tags to change"
+            )));
+        }
+
+        let split = split_frontmatter(&file.content);
+        // The frontmatter as written, never the defaulted one: rewriting a
+        // block that could not be read would replace it with a guess.
+        let Some(record) = frontmatter_record(split.yaml.as_deref()) else {
+            return Err(OkfError::message(format!(
+                "{path} has no readable YAML frontmatter mapping; add one before setting a lifecycle"
+            )));
+        };
+
+        let current: Vec<Value> = match record.get("tags") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(Value::Array(items)) => items.clone(),
+            Some(_) => return Err(OkfError::message(format!("tags in {path} is not a list"))),
+        };
+
+        let next = with_lifecycle(&current, to);
+        if next == current {
+            return Ok(SetLifecycleResult { path: path.to_string(), lifecycle: to, changed: false });
+        }
+
+        // Only the `tags` lines change: a whole-block rewrite would drop the
+        // author's comments and re-quote values like `version: 1.10`.
+        let Some(edited) = set_lifecycle_in_document(&file.content, &current, to) else {
+            return Err(OkfError::message(format!(
+                "tags in {path} are written in a form that cannot be edited safely; change them by hand"
+            )));
+        };
+
+        self.write_file(
+            path,
+            &edited,
+            &WriteOptions {
+                by: Some(Actor::Agent),
+                actor: Some(actor.to_string()),
+                action: Some("write".into()),
+                note: Some(format!("lifecycle: {}", to.as_str())),
+                ..Default::default()
+            },
+        )?;
+        Ok(SetLifecycleResult { path: path.to_string(), lifecycle: to, changed: true })
+    }
+
+    // ---- know-how --------------------------------------------------------------
+
+    /// Create a wiki sub-folder's index.md on first use, without a watcher
+    /// echo.
+    fn ensure_folder(&mut self, dir: &str, title: &str) -> Result<()> {
+        let created = self.require_bundle()?.ensure_folder_index(dir, title);
+        if let Some(rel) = created {
+            self.mark_self_write(&rel);
+        }
+        Ok(())
+    }
+
+    /// Bundle-relative path for a wiki-relative one.
+    fn wiki_path(&self, wiki_rel: &str) -> Result<String> {
+        let wiki_dir = &self.require_bundle()?.paths.wiki_dir;
+        Ok(if wiki_dir.is_empty() {
+            wiki_rel.to_string()
+        } else {
+            format!("{wiki_dir}/{wiki_rel}")
+        })
+    }
+
+    /// Record a lesson for the agents that come next.
+    ///
+    /// One file per lesson under `knowhow/`, named for its title; a repeated
+    /// title gets a numbered name rather than overwriting what another agent
+    /// wrote. `by` is stored beside `generated.by` so the lesson source is a
+    /// first-class field a reader can filter on.
+    pub fn knowhow_add(
+        &mut self,
+        title: &str,
+        body: &str,
+        tags: &[String],
+        actor: &str,
+    ) -> Result<String> {
+        self.require_bundle()?;
+        self.ensure_folder(KNOWHOW_DIR, KNOWHOW_TITLE)?;
+
+        let slug = knowhow_slug_default(title);
+        let mut path = self.wiki_path(&format!("{KNOWHOW_DIR}/{slug}.md"))?;
+        let mut n = 2;
+        while self.require_bundle()?.exists(&path)? {
+            path = self.wiki_path(&format!("{KNOWHOW_DIR}/{slug}-{n}.md"))?;
+            n += 1;
+        }
+
+        let description = derive_description(body);
+        let content = skeleton_concept(&ConceptSkeletonOptions {
+            r#type: KNOWHOW_TYPE.to_string(),
+            title: Some(title.to_string()),
+            description: (!description.is_empty()).then_some(description),
+            tags: tags.to_vec(),
+            body: Some(body.to_string()),
+            generated_by: Some(actor.to_string()),
+            extra: vec![("by".to_string(), actor.to_string())],
+            now: None,
+        });
+        self.write_file(
+            &path,
+            &content,
+            &WriteOptions {
+                by: Some(Actor::Agent),
+                actor: Some(actor.to_string()),
+                action: Some("create".into()),
+                ..Default::default()
+            },
+        )?;
+        Ok(path)
+    }
+
+    /// Rank recorded know-how against a task, as `skill_find` ranks skills.
+    ///
+    /// Cheap by design: titles, descriptions, scores and who recorded each,
+    /// no bodies. DEAD lessons are retired and not offered unless asked for.
+    /// The candidates are put in id order first so equal scores break the
+    /// same way on every run.
+    pub fn knowhow_find(
+        &self,
+        task: &str,
+        limit: i64,
+        include_dead: bool,
+        filters: &SearchFilters,
+    ) -> Result<KnowhowFound> {
+        let prefix = format!("{KNOWHOW_DIR}/");
+        let mut docs: Vec<&ConceptDocument> = self
+            .require_bundle()?
+            .all_concepts()
+            .into_iter()
+            .filter(|doc| doc.id.starts_with(&prefix))
+            .filter(|doc| {
+                include_dead || lifecycle_of(&tags_of(doc)) != LifecycleChoice::Set(Lifecycle::Dead)
+            })
+            .filter(|doc| matches_filters(doc, filters))
+            .collect();
+        docs.sort_by(|a, b| locale_compare(&a.id, &b.id));
+
+        let candidates: Vec<KnowhowCandidate> = docs
+            .into_iter()
+            .map(|doc| KnowhowCandidate {
+                name: concept_title(&doc.id, &doc.frontmatter),
+                description: doc.frontmatter.description.clone().unwrap_or_default(),
+                tags: tags_of(doc),
+                path: doc.rel_path.clone(),
+                by: match doc.frontmatter.extra.get("by").and_then(Value::as_str) {
+                    Some(by) => by.to_string(),
+                    None => doc
+                        .frontmatter
+                        .generated
+                        .as_ref()
+                        .map(|g| g.by.clone())
+                        .unwrap_or_default(),
+                },
+            })
+            .collect();
+
+        let ranked = rank_skills(task, &candidates, Some(limit.clamp(1, 20) as usize));
+        Ok(KnowhowFound {
+            confidence: selection_confidence(&ranked),
+            ranked: ranked
+                .iter()
+                .map(|r| KnowhowRanked {
+                    title: r.skill.name.clone(),
+                    path: r.skill.path.clone(),
+                    description: r.skill.description.clone(),
+                    by: r.skill.by.clone(),
+                    score: js_round(r.score * 100.0) / 100.0,
+                    matched: r.matched.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    // ---- activity ----------------------------------------------------------------
+
+    /// Summarise log.md as a page whose every line cites a log row.
+    ///
+    /// With `save` it is also written as an `ActivitySummary` concept through
+    /// the normal write path, so it is searchable, logged and attributable
+    /// like any other page. Nothing is written when no row matched: an empty
+    /// summary would only be a file that claims nothing.
+    pub fn summarize_activity(
+        &mut self,
+        filter: &ActivityFilter,
+        by: Option<&str>,
+        save: bool,
+    ) -> Result<ActivityResult> {
+        let bundle = self.require_bundle()?;
+        let source = bundle.paths.to_rel(&bundle.paths.log_md_path());
+        let entries = filter_activity(&parse_log_entries(&bundle.read_log()), filter);
+        let Some(summary) = summarize_rows(&entries, filter, &source) else {
+            return Ok(ActivityResult { total: 0, markdown: String::new(), saved: None });
+        };
+
+        let markdown = format!("# {}\n\n{}", summary.title, summary.body);
+        if !save {
+            return Ok(ActivityResult { total: summary.total, markdown, saved: None });
+        }
+
+        let actor_filter = filter.actor.as_deref().filter(|a| !a.is_empty());
+        // Whoever ran the tool is credited; the actor filter only narrows the rows.
+        let actor = by.map(js_trim).filter(|b| !b.is_empty()).unwrap_or("process:okf").to_string();
+        let path = self.wiki_path(&activity_rel_path(&summary.from, &summary.to, actor_filter))?;
+        let existed = self.require_bundle()?.exists(&path)?;
+
+        self.ensure_folder(ACTIVITY_DIR, ACTIVITY_TITLE)?;
+        let content = skeleton_concept(&ConceptSkeletonOptions {
+            r#type: ACTIVITY_TYPE.to_string(),
+            title: Some(summary.title.clone()),
+            description: Some(summary.description.clone()),
+            tags: vec!["activity".to_string()],
+            body: Some(summary.body.clone()),
+            generated_by: Some(actor.clone()),
+            extra: Vec::new(),
+            now: None,
+        });
+        self.write_file(
+            &path,
+            &content,
+            &WriteOptions {
+                by: Some(Actor::Agent),
+                actor: Some(actor),
+                action: Some(if existed { "write" } else { "create" }.into()),
+                ..Default::default()
+            },
+        )?;
+        Ok(ActivityResult { total: summary.total, markdown, saved: Some(path) })
     }
 
     pub fn unresolved_links(&self) -> Result<Vec<UnresolvedLink>> {
@@ -946,3 +1597,7 @@ fn id_of(bundle: &Bundle, rel_path: &str) -> String {
 #[cfg(test)]
 #[path = "workspace_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "workspace_features_tests.rs"]
+mod features_tests;

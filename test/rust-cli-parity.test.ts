@@ -208,6 +208,96 @@ const WRITE_STEPS: Step[] = [
   onBundle("info"),
 ];
 
+const NOTE_HEAD = "---\ntype: Concept\ntitle: Head\ndescription: the entry point\n---\n\n# Head\n\nzebu pasture rotation plan. See [[mid]] and [[retired]].\n";
+const NOTE_MID = "---\ntype: Concept\ntitle: Mid\ndescription: the middle step\n---\n\n# Mid\n\nSecret body text. Next is [[tail]].\n";
+const NOTE_TAIL = "---\ntype: Concept\ntitle: Tail\ndescription: the far end\n---\n\n# Tail\n\nthe end\n";
+const NOTE_RETIRED = "---\ntype: Concept\ntitle: Retired\ntags: [kiwi, DEAD]\n---\n\n# Retired\n\nkiwi orchard survey notes\n";
+const NOTE_LIVE = "---\ntype: Concept\ntitle: Live\ntags: [kiwi]\n---\n\n# Live\n\nkiwi orchard survey notes\n";
+
+/** Lifecycle, context range, activity summaries and know-how, as the CLI exposes them. */
+const FEATURE_STEPS: Step[] = [
+  onBundle("write-file", "wiki/head.md", "--content", NOTE_HEAD),
+  onBundle("write-file", "wiki/mid.md", "--content", NOTE_MID),
+  onBundle("write-file", "wiki/tail.md", "--content", NOTE_TAIL),
+  onBundle("write-file", "wiki/retired.md", "--content", NOTE_RETIRED),
+  onBundle("write-file", "wiki/live.md", "--content", NOTE_LIVE),
+  onBundle("search", "kiwi"),
+  onBundle("search", "kiwi", "--include_dead"),
+  onBundle("search", "kiwi", "--include_dead", "false"),
+  onBundle("search", "kiwi", "--tags", '["DEAD"]', "--include_dead", "true", "--json"),
+  onBundle("set-lifecycle", "wiki/live.md", "dead", "--actor", "process:parity"),
+  onBundle("set-lifecycle", "wiki/live.md", "dead"),
+  onBundle("set-lifecycle", "wiki/live.md", "product"),
+  onBundle("set-lifecycle", "--path", "wiki/live.md", "--lifecycle", "none"),
+  onBundle("set-lifecycle", "wiki/live.md", "alive"),
+  onBundle("set-lifecycle", "wiki/live.md"),
+  onBundle("set-lifecycle"),
+  onBundle("set-lifecycle", "--help"),
+  onBundle("list-concepts"),
+  onBundle("retrieve", "zebu pasture rotation plan", "--link_depth", "2"),
+  onBundle("retrieve", "zebu pasture rotation plan", "--para_depth", "1", "--link_depth", "1"),
+  onBundle("retrieve", "zebu pasture rotation plan", "--para_depth", "9"),
+  onBundle("retrieve", "zebu pasture rotation plan", "--link_depth", "many"),
+  onBundle("context-pack", "zebu pasture rotation plan", "--link_depth", "1", "--tier", "worker"),
+  onBundle("context-pack", "zebu pasture rotation plan", "--link_depth", "3"),
+  onBundle("context-pack", "kiwi orchard survey notes", "--include_dead"),
+  onBundle("context-pack", "kiwi orchard survey notes", "--para_depth", "2", "--json"),
+  onBundle("knowhow-add", "Quote Windows paths", "Quote any path with spaces before passing it to a shell command.", "process:claude-code", "--tags", '["windows","shell"]'),
+  onBundle("knowhow-add", "--title", "Quote Windows paths", "--body", "second one", "--actor", "process:codex"),
+  onBundle("knowhow-add", "only a title"),
+  onBundle("knowhow-add", "t", "b"),
+  onBundle("knowhow-add"),
+  onBundle("knowhow-find", "quote windows path spaces shell"),
+  onBundle("knowhow-find", "--task", "quote windows path spaces shell", "--limit", "1", "--json"),
+  onBundle("knowhow-find", "zzzzqqq"),
+  onBundle("knowhow-find"),
+  onBundle("read-file", "wiki/knowhow/quote-windows-paths.md"),
+  onBundle("context-pack", "quote windows path spaces shell command"),
+  onBundle("summarize-activity"),
+  onBundle("summarize-activity", "--json"),
+  onBundle("summarize-activity", "--actor", "process:claude-code"),
+  onBundle("summarize-activity", "--since", "bad"),
+  onBundle("summarize-activity", "--since", "2999-01-01"),
+  onBundle("summarize-activity", "--since", "2030-01-02", "--until", "2030-01-01"),
+  onBundle("summarize-activity", "--save", "--actor", "process:parity"),
+  onBundle("summarize-activity", "--save", "--since", "2020-01-01", "--until", "2999-12-31"),
+  onBundle("read-file", "wiki/activity/2020-01-01_2999-12-31.md"),
+  onBundle("list-files", "wiki/activity"),
+  onBundle("audit-changes", "--actor", "process:parity"),
+  onBundle("--help"),
+];
+
+const NOTE_ITEM_A = "---\ntype: Concept\ntitle: Apple\nprice: 1.5\ntags: [Product]\n---\n\n# Apple\n";
+const NOTE_ITEM_B = "---\ntype: Concept\ntitle: Banana\nprice: 12\ntags: [DEAD]\n---\n\n# Banana\n";
+const BASE_TEXT =
+  'filters: file.hasTag("Product") || file.hasTag("DEAD")\nformulas:\n  big: price > 5\nviews:\n  - type: table\n    name: Items\n    order: [title, price, formula.big]\n    sort: [{property: price, direction: DESC}]\n    summaries: {price: Sum}\n  - type: cards\n    name: Cards\n    groupBy: formula.big\n';
+
+/** Bases, as the CLI exposes them. */
+const BASE_STEPS: Step[] = [
+  onBundle("write-file", "wiki/items/a.md", "--content", NOTE_ITEM_A),
+  onBundle("write-file", "wiki/items/b.md", "--content", NOTE_ITEM_B),
+  onBundle("base-list"),
+  onBundle("base-list", "--json"),
+  onBundle("base-write", "wiki/bases/items.base", "--content", BASE_TEXT, "--actor", "process:parity"),
+  onBundle("base-write", "--path", "wiki/bases/bad.base", "--content", "filters: 'a ='"),
+  onBundle("base-write", "wiki/bases/bad.base"),
+  onBundle("base-write"),
+  onBundle("base-list"),
+  onBundle("base-query", "wiki/bases/items.base"),
+  onBundle("base-query", "--path", "wiki/bases/items.base", "--view", "Cards", "--json"),
+  onBundle("base-query", "wiki/bases/items.base", "--view", "Items", "--limit", "1"),
+  onBundle("base-query", "wiki/bases/items.base", "--limit", "0"),
+  onBundle("base-query", "wiki/bases/items.base", "--view", "Nope"),
+  onBundle("base-query", "wiki/bases/missing.base"),
+  onBundle("base-query", "wiki/alpha.md"),
+  onBundle("base-query"),
+  onBundle("base-query", "--help"),
+  onBundle("base-write", "--help"),
+  onBundle("base-list", "--help"),
+  onBundle("read-file", "wiki/bases/items.base"),
+  onBundle("--help"),
+];
+
 const CONFIG_STEPS: Step[] = [
   ...["json", "toml", "opencode", "yaml", "command"].map((format) => onBundle("mcp-config", "--format", format)),
   onBundle("mcp-config"),
@@ -388,6 +478,14 @@ describe.skipIf(!ready)("Rust okf CLI parity", () => {
 
   test("write commands leave both bundles the same", async () => {
     expect(await compare(WRITE_STEPS)).toBeGreaterThan(40);
+  }, 300_000);
+
+  test("lifecycle, context range, know-how and activity commands", async () => {
+    expect(await compare(FEATURE_STEPS)).toBeGreaterThan(40);
+  }, 300_000);
+
+  test("base commands", async () => {
+    expect(await compare(BASE_STEPS)).toBeGreaterThan(15);
   }, 300_000);
 
   test("mcp-config in every format", async () => {

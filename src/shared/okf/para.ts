@@ -121,3 +121,13 @@ export function byParaPriority(a: string, b: string): number {
   const rank = (p: string) => PARA_ORDER.indexOf(paraOf(p));
   return rank(a) - rank(b) || a.localeCompare(b);
 }
+
+/**
+ * Whether a wiki-relative path is read at a given depth of the priority order:
+ * 1 = projects only, 2 = + areas, 3 = + resources, 4 = everything.
+ *
+ * An unfiled concept is a Resource (see `paraOf`), so it appears from depth 3.
+ */
+export function withinParaDepth(wikiRelPath: string, depth: number): boolean {
+  return PARA_ORDER.indexOf(paraOf(wikiRelPath)) < depth;
+}

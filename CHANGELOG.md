@@ -2,6 +2,54 @@
 
 ## 0.7.0
 
+### Lifecycle, context range, activity summaries and know-how
+
+Four additions to the MCP tools (45 now), in both the Bun and the Rust build,
+byte for byte the same.
+
+- **`Product` and `DEAD` tags.** `set_lifecycle { path, lifecycle: product | dead | none }`
+  edits the frontmatter tags through the normal write path. DEAD concepts are
+  left out of `search`, `retrieve` and `context_pack` unless
+  `include_dead` is true; `list_concepts` still lists them, with a
+  `lifecycle` key on marked entries. Product multiplies the ranking score by
+  1.1, a nudge smaller than one PARA step (resource to area is 1.2), so it
+  settles ties without letting a Product page outrank a better match.
+- **Context range.** `retrieve` and `context_pack` take `para_depth` (1-4:
+  projects only, up to everything) and `link_depth` (0-2: follow links from the
+  returned files and list their one-line descriptions, never bodies, inside the
+  same character budget). Out-of-range values are rejected, not clamped.
+- **`summarize_activity`.** log.md rows grouped by actor, then file, each line
+  citing its date and path, with totals per action. `save: true` writes it as
+  an `ActivitySummary` concept under `wiki/activity/`.
+- **Know-how.** `knowhow_add` records a short lesson with who recorded it in
+  `wiki/knowhow/`; `knowhow_find` ranks them like `skill_find`;
+  `context_pack` adds the top three. New bundles get both folders with an
+  `index.md`; older ones get them on the first write. AGENTS.md tells agents
+  to check know-how first and record a lesson after a non-obvious discovery.
+
+### Bases: list and aggregate views over the concepts
+
+`.base` files (the Obsidian Bases format) define saved lists and aggregates over
+the concepts, shown as a table or cards. Three more MCP tools (48 now), in the
+Bun and the Rust build, byte for byte the same.
+
+- **`base_list`, `base_query { path, view?, limit? }`, `base_write { path, content, actor? }`.**
+  `base_query` returns columns, rows or groups, summaries and warnings as JSON plus
+  a Markdown table; rows are ordered deterministically and capped at 500.
+  `base_write` checks the YAML and the supported subset first and writes the text
+  exactly as given, so keys this app does not use survive a round trip.
+- **Supported subset.** `filters` (and / or / not; `not` means none of), `formulas`,
+  `properties` (`displayName`), custom `summaries`, and `views` of type `table` and
+  `cards` with `name`, `filters`, `order`, `sort`, `limit`, `groupBy`, `summaries`.
+  Expressions are parsed and evaluated by a small evaluator, never `eval`; dates
+  are UTC. Not supported: other view types (kept, listed, not run), `file.size`,
+  `ctime`, `embeds`, `backlinks`, `this`, regular-expression literals, `html()`,
+  `image()`, `icon()`, `random()`, `relative()`. `file.para` is an extension.
+- **Interface.** Opening a `.base` shows tabs per view, the table or cards, group
+  headers (click to fold), a summary row and click-through to the concept;
+  "YAML を編集" switches to the raw source, saved through the normal write path.
+- New bundles get `wiki/bases/` with an example. `.base` files are not concepts.
+
 ### The headless server and the CLI, in Rust
 
 `rust/` is a port of everything an agent or a terminal talks to — the 41 MCP

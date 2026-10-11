@@ -436,6 +436,18 @@ impl Bundle {
         Ok(nodes)
     }
 
+    /// Whether a path exists. Only "not found" means no: any other fault
+    /// (permissions, a file where a folder should be) is an error, so a caller
+    /// choosing a free name never overwrites on a guess.
+    pub fn exists(&self, rel_path: &str) -> Result<bool> {
+        let abs = self.paths.resolve(rel_path)?;
+        match error::stat(&abs) {
+            Ok(_) => Ok(true),
+            Err(e) if e.code == "ENOENT" => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn read_file(&mut self, rel_path: &str) -> Result<ReadFileResult> {
         let abs = self.paths.resolve(rel_path)?;
         let bytes = error::read_bytes(&abs)?;
@@ -889,6 +901,24 @@ impl Bundle {
         self.ensure_reserved_file(&index_path, |bundle| bundle.render_index());
         let log_path = self.paths.log_md_path();
         self.ensure_reserved_file(&log_path, |_| empty_log_md("Log"));
+    }
+
+    /// Create a wiki sub-folder with an `index.md` if it has none.
+    ///
+    /// For folders that appeared after a bundle was made (know-how,
+    /// activity): a bundle scaffolded earlier gets them on the first write
+    /// instead of needing a migration. Returns the index's bundle-relative
+    /// path when it was created. Never fatal, for the same reason
+    /// `ensure_reserved_files` is not.
+    pub fn ensure_folder_index(&self, dir: &str, title: &str) -> Option<String> {
+        let index = nodepath::join(&[&self.paths.wiki_root(), dir, "index.md"]);
+        if error::path_exists(&index) {
+            return None;
+        }
+        let parent = nodepath::join(&[&self.paths.wiki_root(), dir]);
+        error::mkdir_p(&parent).ok()?;
+        error::write_text(&index, &render_index_md(title, &[], &IndexOptions::default())).ok()?;
+        Some(self.paths.to_rel(&index))
     }
 
     fn ensure_reserved_file(&mut self, abs: &str, render: impl FnOnce(&Bundle) -> String) {

@@ -88,6 +88,14 @@ pub fn check_conformance(bundle_rel_path: &str, raw: &str) -> ConformanceResult 
         };
     }
 
+    // A `.base` file is YAML for a view over the concepts, not a concept itself.
+    if basename.ends_with(".base") {
+        return ConformanceResult {
+            ok: true,
+            errors: vec![],
+        };
+    }
+
     if is_reserved_filename(basename_of(path)) {
         let Some(yaml) = yaml else {
             return ConformanceResult {

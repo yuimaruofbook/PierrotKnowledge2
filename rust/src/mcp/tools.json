@@ -234,6 +234,18 @@
     "path_prefix": {
      "type": "string",
      "description": "Restrict to a bundle-relative path prefix"
+    },
+    "include_dead": {
+     "type": "boolean",
+     "description": "Also return concepts tagged DEAD, which are left out by default (default false)"
+    },
+    "para_depth": {
+     "type": "number",
+     "description": "Only read PARA classes up to this priority, 1-4: 1 projects, 2 +areas, 3 +resources (unfiled concepts and know-how count here), 4 everything (default)"
+    },
+    "link_depth": {
+     "type": "number",
+     "description": "After retrieval, follow links from the returned files up to 0-2 hops and list those files' one-line descriptions (never bodies) within the same budget (default 0)"
     }
    },
    "required": [
@@ -244,7 +256,7 @@
  {
   "name": "context_pack",
   "title": "Build a context pack",
-  "description": "Assemble the MINIMAL set of files needed to start a task — relevant passages grouped by file, each file's one-line description, and the skills that match the task — within a character budget. Call this at the START of substantial work instead of reading files one by one. tier='worker' returns a small pack for a cheap or local model doing delegated work; tier='supervisor' returns a broader pack for a frontier model planning or verifying. Omit tier for a middle default.",
+  "description": "Assemble the MINIMAL set of files needed to start a task — relevant passages grouped by file, each file's one-line description, and the skills that match the task — within a character budget. Call this at the START of substantial work instead of reading files one by one. tier='worker' returns a small pack for a cheap or local model doing delegated work; tier='supervisor' returns a broader pack for a frontier model planning or verifying. Omit tier for a middle default. The pack also lists the best-matching know-how (lessons other agents recorded) and, with link_depth, one-line pointers to files linked from the ones above.",
   "inputSchema": {
    "type": "object",
    "properties": {
@@ -278,6 +290,18 @@
     "path_prefix": {
      "type": "string",
      "description": "Restrict to a bundle-relative path prefix"
+    },
+    "include_dead": {
+     "type": "boolean",
+     "description": "Also return concepts tagged DEAD, which are left out by default (default false)"
+    },
+    "para_depth": {
+     "type": "number",
+     "description": "Only read PARA classes up to this priority, 1-4: 1 projects, 2 +areas, 3 +resources (unfiled concepts and know-how count here), 4 everything (default)"
+    },
+    "link_depth": {
+     "type": "number",
+     "description": "After retrieval, follow links from the returned files up to 0-2 hops and list those files' one-line descriptions (never bodies) within the same budget (default 0)"
     }
    },
    "required": [
@@ -288,7 +312,7 @@
  {
   "name": "search",
   "title": "Search",
-  "description": "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese via bigram indexing.",
+  "description": "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese via bigram indexing. Concepts tagged DEAD are left out unless include_dead is true (to list them: tags ['DEAD'] with include_dead).",
   "inputSchema": {
    "type": "object",
    "properties": {
@@ -313,6 +337,10 @@
     "path_prefix": {
      "type": "string",
      "description": "Restrict to a bundle-relative path prefix"
+    },
+    "include_dead": {
+     "type": "boolean",
+     "description": "Also return concepts tagged DEAD, which are left out by default (default false)"
     }
    },
    "required": [
@@ -323,7 +351,7 @@
  {
   "name": "list_concepts",
   "title": "List concepts",
-  "description": "Every concept id with its title and type. Use to get an overview of the bundle, or to find the exact id for a link.",
+  "description": "Every concept id with its title and type, plus its lifecycle when marked (product | dead). Use to get an overview of the bundle, or to find the exact id for a link. DEAD concepts are listed here too: this is the inventory.",
   "inputSchema": {
    "type": "object",
    "properties": {}
@@ -539,6 +567,36 @@
   }
  },
  {
+  "name": "summarize_activity",
+  "title": "Summarize activity",
+  "description": "Summarize what changed in the bundle as a page you can cite: log.md rows grouped by actor, then by file, each line giving the log date and the bundle-relative path it came from, plus totals per action. Nothing is inferred beyond the log. Filter by ISO dates and an actor substring. With save: true it is also written as an ActivitySummary concept at wiki/activity/<since>_<until>[_<actor>].md (credited to 'by', or process:okf; a filter that does not survive as a file name gets a short hash appended so two filters never share a file) and the path is returned instead of the page.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "since": {
+     "type": "string",
+     "description": "ISO date; only rows on or after it"
+    },
+    "until": {
+     "type": "string",
+     "description": "ISO date; only rows on or before it"
+    },
+    "actor": {
+     "type": "string",
+     "description": "Substring filter on the actor, e.g. 'process:codex'. Only narrows the rows; it does not say who saves the summary."
+    },
+    "by": {
+     "type": "string",
+     "description": "Who is running this, e.g. 'process:claude-code'; credits a saved summary (default process:okf)"
+    },
+    "save": {
+     "type": "boolean",
+     "description": "Write the summary into wiki/activity/ and return its path (default false)"
+    }
+   }
+  }
+ },
+ {
   "name": "rebuild_index",
   "title": "Rebuild index.md",
   "description": "Regenerate index.md from all concepts currently on disk.",
@@ -659,6 +717,147 @@
      "description": "Restrict to one class. Omit for all."
     }
    }
+  }
+ },
+ {
+  "name": "set_lifecycle",
+  "title": "Mark Product or DEAD",
+  "description": "Mark a concept's lifecycle with a frontmatter tag: 'product' (a finished, trusted result - ranks slightly higher), 'dead' (retired - left out of search, retrieve and context_pack unless include_dead is true; NOT deleted, links and history stay), or 'none' to clear. A concept is never both. To list retired files: search with tags ['DEAD'] and include_dead true.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "Bundle-relative path of the concept."
+    },
+    "lifecycle": {
+     "type": "string",
+     "description": "product | dead | none"
+    },
+    "actor": {
+     "type": "string",
+     "description": "Who is making the change, e.g. process:claude-code."
+    }
+   },
+   "required": [
+    "path",
+    "lifecycle"
+   ]
+  }
+ },
+ {
+  "name": "knowhow_find",
+  "title": "Find know-how",
+  "description": "Find lessons other agents recorded that fit a task: pitfalls, conventions, 'this worked'. CHEAP — returns titles, descriptions, scores and who recorded each, never the body (read_file the ones that apply). Call this before starting work; context_pack already includes the top three.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "task": {
+     "type": "string",
+     "description": "What you are about to do, in natural language."
+    },
+    "limit": {
+     "type": "number",
+     "description": "Candidates to return, 1-20. Default 3."
+    }
+   },
+   "required": [
+    "task"
+   ]
+  }
+ },
+ {
+  "name": "knowhow_add",
+  "title": "Record know-how",
+  "description": "Record one short lesson for the agents that come after you, after a non-obvious discovery: a pitfall, a convention, something that worked. One lesson per call, written so it makes sense without this conversation. Stored in wiki/knowhow/ with who recorded it. Lighter than a skill — if it is a full procedure, write a skill instead.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "title": {
+     "type": "string",
+     "description": "The lesson in a few words."
+    },
+    "body": {
+     "type": "string",
+     "description": "What happened and what to do about it. Start with the one-line takeaway."
+    },
+    "tags": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Topics, for filtering"
+    },
+    "actor": {
+     "type": "string",
+     "description": "Which agent is recording this, e.g. process:claude-code or process:codex."
+    }
+   },
+   "required": [
+    "title",
+    "body",
+    "actor"
+   ]
+  }
+ },
+ {
+  "name": "base_list",
+  "title": "List bases",
+  "description": "List the .base files in wiki/ with the views each offers (name and type). A base is a saved list or aggregate over the concepts - for example 'every Product by PARA, with counts'. Check here before scanning many files to answer a list or count question: if a base already answers it, base_query returns the rows directly.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {}
+  }
+ },
+ {
+  "name": "base_query",
+  "title": "Query a base",
+  "description": "Run one view of a .base file over the concepts and return JSON (columns, rows or groups, summaries, warnings) plus a compact Markdown table in 'markdown'. Rows are ordered deterministically and capped at 500. Use this instead of reading many files for lists, counts and aggregates (e.g. all Product concepts per PARA class). Supports table and cards views; formulas, sorting, grouping and summaries are evaluated for you.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "Bundle-relative path of the .base file, e.g. wiki/bases/products-and-dead.base."
+    },
+    "view": {
+     "type": "string",
+     "description": "View name (see base_list). Defaults to the first view."
+    },
+    "limit": {
+     "type": "number",
+     "description": "Return at most this many rows (a positive integer; the view's own limit still applies)."
+    }
+   },
+   "required": [
+    "path"
+   ]
+  }
+ },
+ {
+  "name": "base_write",
+  "title": "Write a base",
+  "description": "Create or replace a .base file under wiki/. The YAML and the supported subset are checked first and nothing is written if they are invalid; the text is saved exactly as given, so keys this app does not use survive. Format (Obsidian Bases): top-level filters (a string expression, or and/or/not lists), formulas, properties (displayName), summaries, and views of type table or cards with name, filters, order, sort ([{property, direction}]), limit, groupBy ({property, direction}) and summaries ({property: Sum}). File properties: file.name, basename, path, folder, ext, mtime, tags, links, properties, plus file.para; file.hasTag(), file.inFolder(), file.hasLink() work. Frontmatter keys are bare names or note.NAME; formulas are formula.NAME. Create a base when you expect to ask the same list or count question again.",
+  "inputSchema": {
+   "type": "object",
+   "properties": {
+    "path": {
+     "type": "string",
+     "description": "Bundle-relative path ending in .base, under wiki/, e.g. wiki/bases/open-projects.base."
+    },
+    "content": {
+     "type": "string",
+     "description": "The full YAML text of the base."
+    },
+    "actor": {
+     "type": "string",
+     "description": "Who is writing, e.g. process:claude-code."
+    }
+   },
+   "required": [
+    "path",
+    "content"
+   ]
   }
  },
  {

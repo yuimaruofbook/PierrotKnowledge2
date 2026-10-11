@@ -21,6 +21,8 @@ import { ConnectionsPanel } from "./ui/connections";
 import { SkillsPanel } from "./ui/skills";
 import { CommandPalette, type PaletteItem } from "./ui/palette";
 import { SearchPanel } from "./ui/search";
+import { BaseView } from "./ui/base-view";
+import { isBasePath } from "../shared/okf/base";
 import { FileTree } from "./ui/tree";
 
 const ui = {
@@ -134,6 +136,19 @@ const palette = new CommandPalette({
   empty: ui.paletteEmpty,
 });
 
+/**
+ * Bases are drawn by the Bun side's own query, the same one `base_query` runs.
+ * Clicking a row opens the concept; "YAML を編集" is the raw-source toggle.
+ */
+const baseView = new BaseView({
+  run: (path, view) => rpc.request.baseView({ path, ...(view !== undefined ? { view } : {}) }),
+  openConcept: (path) => void openFile(path),
+  editSource: () => {
+    editor.setMode("edit");
+    showActiveMode("edit");
+  },
+});
+
 const editor = new Editor({
   textarea: ui.textarea,
   preview: ui.preview,
@@ -143,6 +158,7 @@ const editor = new Editor({
   backlinks: ui.backlinks,
   autocomplete: ui.autocomplete,
   binaryNotice: ui.binaryNotice,
+  renderBase: (target, path) => void baseView.show(target, path),
   onDirtyChange: (dirty) => {
     ui.save.disabled = !dirty;
     ui.pathLabel.classList.toggle("dirty", dirty);
@@ -912,6 +928,19 @@ async function rebuild(): Promise<void> {
   }
 }
 
+const BASE_REFRESH_DELAY_MS = 300;
+let baseRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Re-render the open base once, a moment after the last relevant change. */
+function scheduleBaseRefresh(): void {
+  if (baseRefreshTimer !== undefined) clearTimeout(baseRefreshTimer);
+  baseRefreshTimer = setTimeout(() => {
+    baseRefreshTimer = undefined;
+    // The person may have left the base while the timer ran.
+    if (isBasePath(editor.path ?? "") && editor.currentMode === "preview") editor.setMode("preview");
+  }, BASE_REFRESH_DELAY_MS);
+}
+
 /**
  * React to a change made outside the editor — an agent over MCP, or another
  * program. A clean buffer is refreshed silently; a dirty one is left alone and
@@ -923,7 +952,16 @@ async function handleFileChanged(paths: string[], info: BundleInfo): Promise<voi
   if (editor.path) tree.select(editor.path);
 
   const openPath = editor.path;
-  if (!openPath || !paths.includes(openPath)) return;
+  if (!openPath) return;
+
+  // A base shows other files' contents, so a changed concept can alter it. Other
+  // files cannot, and a burst of events (an agent writing many files) is
+  // answered by one re-run after it settles, not one query per event.
+  if (isBasePath(openPath) && editor.currentMode === "preview" && !paths.includes(openPath)) {
+    if (paths.some((p) => p.toLowerCase().endsWith(".md"))) scheduleBaseRefresh();
+    return;
+  }
+  if (!paths.includes(openPath)) return;
 
   if (editor.isDirty) {
     setStatus(`${openPath} が外部で変更されました（未保存の変更あり）`, "error");
@@ -952,8 +990,12 @@ ui.modeGroup.addEventListener("click", (event) => {
   const button = (event.target as HTMLElement | null)?.closest<HTMLElement>("button[data-mode]");
   const mode = button?.dataset.mode as PreviewMode | undefined;
   if (!mode) return;
-  editor.setMode(mode);
-  showActiveMode(mode);
+  void (async () => {
+    // The base view is computed from the saved file, so flush what was typed.
+    if (mode === "preview" && editor.isDirty && isBasePath(editor.path ?? "")) await save({ silent: true });
+    editor.setMode(mode);
+    showActiveMode(mode);
+  })();
 });
 
 window.addEventListener("keydown", (event) => {

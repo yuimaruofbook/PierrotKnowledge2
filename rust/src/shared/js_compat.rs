@@ -300,6 +300,85 @@ pub fn serialize_js_f64<S: Serializer>(value: &f64, serializer: S) -> Result<S::
     }
 }
 
+/// JS `String(number)` (`Number::toString`): shortest round-trip digits, laid
+/// out the way ECMAScript does (`1e+21`, `1.5e-7`, `-0` is `0`).
+pub fn js_number_to_string(x: f64) -> String {
+    if x.is_nan() {
+        return "NaN".into();
+    }
+    if x == 0.0 {
+        return "0".into();
+    }
+    if x.is_infinite() {
+        return if x < 0.0 { "-Infinity" } else { "Infinity" }.into();
+    }
+    if x < 0.0 {
+        return format!("-{}", js_number_to_string(-x));
+    }
+    // `{:e}` prints the shortest digits that round-trip: `d.ddde<exp>`.
+    let sci = format!("{x:e}");
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32;
+    let n = exp.parse::<i32>().unwrap_or(0) + 1;
+    if k <= n && n <= 21 {
+        return format!("{digits}{}", "0".repeat((n - k) as usize));
+    }
+    if 0 < n && n <= 21 {
+        return format!("{}.{}", &digits[..n as usize], &digits[n as usize..]);
+    }
+    if -6 < n && n <= 0 {
+        return format!("0.{}{digits}", "0".repeat((-n) as usize));
+    }
+    let sign = if n - 1 < 0 { "-" } else { "+" };
+    let e = (n - 1).abs();
+    if k == 1 {
+        format!("{digits}e{sign}{e}")
+    } else {
+        format!("{}.{}e{sign}{e}", &digits[..1], &digits[1..])
+    }
+}
+
+/// JS `Number.prototype.toFixed`: the exact binary value rounded half up.
+///
+/// Rust's own `{:.N}` breaks exact ties to even (`2.5` gives `2`), JS to the
+/// larger value (`"3"`), so the exact expansion is rounded by hand.
+pub fn js_to_fixed(x: f64, digits: usize) -> String {
+    if !x.is_finite() || x.abs() >= 1e21 {
+        return js_number_to_string(x);
+    }
+    let negative = x < 0.0;
+    // A finite f64 has at most 1074 fractional digits, so this is exact.
+    let exact = format!("{:.1074}", x.abs());
+    let (int_part, frac) = exact.split_once('.').unwrap_or((&exact, ""));
+    let mut all: Vec<u8> = int_part.bytes().chain(frac.bytes().take(digits)).map(|b| b - b'0').collect();
+    let round_up = frac.as_bytes().get(digits).is_some_and(|d| *d >= b'5');
+    if round_up {
+        let mut i = all.len();
+        loop {
+            if i == 0 {
+                all.insert(0, 1);
+                break;
+            }
+            i -= 1;
+            if all[i] == 9 {
+                all[i] = 0;
+            } else {
+                all[i] += 1;
+                break;
+            }
+        }
+    }
+    let text: String = all.iter().map(|d| (d + b'0') as char).collect();
+    let split = text.len() - digits;
+    let body = if digits == 0 { text } else { format!("{}.{}", &text[..split], &text[split..]) };
+    if negative {
+        format!("-{body}")
+    } else {
+        body
+    }
+}
+
 // ---- localeCompare ----------------------------------------------------------------
 
 /// The collator `String.prototype.localeCompare` uses: ICU for the host's
@@ -399,6 +478,44 @@ mod tests {
         assert_eq!(locale_compare("a1", "ab"), Ordering::Less);
         assert_eq!(locale_compare("a", "A"), Ordering::Less);
         assert_eq!(locale_compare("B", "a"), Ordering::Greater);
+    }
+}
+
+#[cfg(test)]
+mod number_tests {
+    use super::*;
+
+    #[test]
+    fn number_to_string_follows_ecmascript() {
+        for (x, want) in [
+            (0.0, "0"),
+            (-0.0, "0"),
+            (1.0, "1"),
+            (-1.5, "-1.5"),
+            (0.1 + 0.2, "0.30000000000000004"),
+            (100.0, "100"),
+            (1e21, "1e+21"),
+            (1.5e-7, "1.5e-7"),
+            (0.000001, "0.000001"),
+            (123456789012345680000.0, "123456789012345680000"),
+            (f64::INFINITY, "Infinity"),
+            (f64::NAN, "NaN"),
+        ] {
+            assert_eq!(js_number_to_string(x), want, "{x}");
+        }
+    }
+
+    #[test]
+    fn to_fixed_rounds_ties_up_on_the_exact_value() {
+        assert_eq!(js_to_fixed(2.5, 0), "3");
+        assert_eq!(js_to_fixed(1.005, 2), "1.00");
+        assert_eq!(js_to_fixed(0.125, 2), "0.13");
+        assert_eq!(js_to_fixed(9.995, 2), "9.99");
+        assert_eq!(js_to_fixed(99.5, 0), "100");
+        assert_eq!(js_to_fixed(-1.5, 0), "-2");
+        assert_eq!(js_to_fixed(-0.001, 2), "-0.00");
+        assert_eq!(js_to_fixed(0.0, 2), "0.00");
+        assert_eq!(js_to_fixed(1234.5678, 1), "1234.6");
     }
 }
 

@@ -300,6 +300,23 @@ pub fn parse_frontmatter(yaml: Option<&str>) -> ConceptFrontmatter {
     ConceptFrontmatter::from_map(&parse_frontmatter_map(yaml))
 }
 
+/// The frontmatter exactly as written: a mapping, or `None` when there is
+/// none to edit (absent, empty, not a mapping, or not valid YAML).
+///
+/// [`parse_frontmatter`] papers over all of those with a default `type`,
+/// which is right for reading and wrong for rewriting: saving that default
+/// back would replace a broken block the author could still repair by hand.
+pub fn frontmatter_record(yaml: Option<&str>) -> Option<Map<String, Value>> {
+    let yaml = yaml?;
+    if js_trim(yaml).is_empty() {
+        return None;
+    }
+    match parse_yaml(yaml) {
+        Some(Value::Object(map)) => Some(map),
+        _ => None,
+    }
+}
+
 pub fn parse_concept(opts: ParseConceptOptions) -> ConceptDocument {
     let split = split_frontmatter(&opts.raw);
     let frontmatter = parse_frontmatter(split.yaml.as_deref());
@@ -349,6 +366,8 @@ pub struct ConceptSkeletonOptions {
     pub tags: Vec<String>,
     pub body: Option<String>,
     pub generated_by: Option<String>,
+    /// Extra string keys, written after `generated` (e.g. `by` on know-how).
+    pub extra: Vec<(String, String)>,
     /// `new Date()`; defaults to now.
     pub now: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -381,6 +400,9 @@ pub fn skeleton_concept(opts: &ConceptSkeletonOptions) -> String {
             Value::String(super::error::iso_of(opts.now.unwrap_or_else(chrono::Utc::now))),
         );
         fm.insert("generated".into(), Value::Object(g));
+    }
+    for (key, value) in &opts.extra {
+        fm.insert(key.clone(), Value::String(value.clone()));
     }
     fm.insert("status".into(), Value::String("draft".into()));
 

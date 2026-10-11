@@ -315,6 +315,21 @@ export class Bundle {
     });
   }
 
+  /**
+   * Whether a path exists. Only "not found" means no: any other fault
+   * (permissions, a file where a folder should be) is thrown, so a caller
+   * choosing a free name never overwrites on a guess.
+   */
+  async exists(relPath: string): Promise<boolean> {
+    try {
+      await stat(this.paths.resolve(relPath));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+
   async readFile(relPath: string): Promise<ReadFileResult> {
     const abs = this.paths.resolve(relPath);
     const bytes = new Uint8Array(await readFile(abs));
@@ -732,6 +747,26 @@ export class Bundle {
       await writeFile(abs, await render(), "utf8");
     } catch (error) {
       this.warnings.push(messages.reservedFileNotCreated(abs, reasonOf(error)));
+    }
+  }
+
+  /**
+   * Create a wiki sub-folder with an `index.md` if it has none.
+   *
+   * For folders that appeared after a bundle was made (know-how, activity):
+   * a bundle scaffolded earlier gets them on the first write instead of
+   * needing a migration. Returns the index's bundle-relative path when it was
+   * created. Never fatal, for the same reason `ensureReservedFiles` is not.
+   */
+  async ensureFolderIndex(dir: string, title: string): Promise<string | null> {
+    const index = join(this.paths.wikiRoot, dir, "index.md");
+    try {
+      if (await pathExists(index)) return null;
+      await mkdir(dirname(index), { recursive: true });
+      await writeFile(index, renderIndexMd(title, []), "utf8");
+      return this.paths.toRel(index);
+    } catch {
+      return null;
     }
   }
 

@@ -101,7 +101,7 @@ fn resolve_tool(name: &str) -> Option<&'static Value> {
 
 /// How the command list is grouped in `--help`. Hand-ordered, by what you are
 /// trying to do; a test asserts every tool appears in exactly one group.
-pub const COMMAND_GROUPS: [(&str, &[&str]); 8] = [
+pub const COMMAND_GROUPS: [(&str, &[&str]); 10] = [
     (
         "知識を読む",
         &["retrieve", "context_pack", "search", "read_file", "list_concepts", "list_tags", "backlinks"],
@@ -109,12 +109,21 @@ pub const COMMAND_GROUPS: [(&str, &[&str]); 8] = [
     ("知識を書く", &["create_concept", "write_file", "move_file", "delete_file"]),
     ("方向づけ", &["read_map", "read_human", "list_tasks", "add_task", "update_task"]),
     ("デイリーノート", &["daily_note", "collect_daily_tasks"]),
-    ("PARA", &["list_para", "set_para"]),
+    ("PARA", &["list_para", "set_para", "set_lifecycle"]),
     ("スキル", &["skill_find", "skill_list", "skill_open", "skill_read"]),
+    ("ノウハウ", &["knowhow_find", "knowhow_add"]),
+    ("ベース（一覧・集計ビュー）", &["base_list", "base_query", "base_write"]),
     ("ループ", &["loop_list", "loop_start", "loop_note", "loop_end", "loop_read"]),
     (
         "点検",
-        &["check_conformance", "audit_changes", "unresolved_links", "rebuild_index", "rebuild_rag"],
+        &[
+            "check_conformance",
+            "audit_changes",
+            "summarize_activity",
+            "unresolved_links",
+            "rebuild_index",
+            "rebuild_rag",
+        ],
     ),
 ];
 

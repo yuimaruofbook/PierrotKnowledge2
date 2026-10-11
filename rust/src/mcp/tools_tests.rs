@@ -148,7 +148,7 @@ fn tools_list_returns_schemas_for_every_tool() {
         handle_message(&mut ws, &json!({ "jsonrpc": "2.0", "id": 3, "method": "tools/list" })).unwrap();
     let tools = response["result"]["tools"].as_array().unwrap();
 
-    assert_eq!(tools.len(), 41);
+    assert_eq!(tools.len(), 48);
     assert_eq!(tools.len(), TOOLS.len());
     for tool in tools {
         let name = tool["name"].as_str().unwrap();

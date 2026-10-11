@@ -12,6 +12,7 @@
 import type { McpToolDefinition, ServerStatus } from "./mcp-types";
 import type { BulkConnectOutcome } from "./connect-types";
 import type { SkillSummary } from "./okf/skill";
+import type { BaseViewResponse } from "./okf/base";
 import type { AgentRunResult, AgentStep } from "./agent-types";
 import type {
   BundleInfo,
@@ -262,6 +263,12 @@ export type OkfRpcSchema = {
         params: { id: string; model: string; task: string; maxRounds?: number; tokenBudget?: number };
         response: AgentRunResult;
       };
+
+      /**
+       * One view of a `.base` file, run over the open bundle's concepts.
+       * Without `view`, the first one. Failures are in the response, not thrown.
+       */
+      baseView: { params: { path: string; view?: string }; response: BaseViewResponse };
 
       rebuildIndex: { params: void; response: { rows: number } };
       rebuildRag: { params: void; response: { indexed: number } };

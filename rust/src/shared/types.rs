@@ -245,6 +245,23 @@ impl ConceptFrontmatter {
             key_order: Vec::new(),
         }
     }
+
+    /// The tags that are strings, which is all the index and lifecycle read.
+    ///
+    /// A list that also holds a number or a map is kept whole in `extra` (so
+    /// it serialises back unchanged), yet the string tags in it still count,
+    /// as they do in the TS index.
+    pub fn string_tags(&self) -> Vec<String> {
+        if let Some(tags) = &self.tags {
+            return tags.clone();
+        }
+        match self.extra.get("tags") {
+            Some(Value::Array(items)) => {
+                items.iter().filter_map(Value::as_str).map(str::to_string).collect()
+            }
+            _ => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,6 +377,14 @@ pub struct SearchFilters {
     /// Restrict to a bundle-relative path prefix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_prefix: Option<String>,
+    /// Keep concepts tagged DEAD, which are left out by default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub include_dead: Option<bool>,
+    /// Only read PARA classes up to this priority: 1 projects, 2 + areas,
+    /// 3 + resources, 4 everything (the default). Unfiled concepts count as
+    /// resources, as they do in ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub para_depth: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,12 +409,33 @@ pub struct RetrievedPassage {
     pub score: f64,
 }
 
+/// A file reached by following links from the retrieved ones: a pointer with
+/// its one-line description, never a body.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedFile {
+    pub path: String,
+    pub id: String,
+    pub title: String,
+    pub r#type: String,
+    /// The file's own frontmatter description, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Links followed to get here (1 or 2).
+    pub hops: u32,
+    /// Path of the file whose link led here, so the chain can be walked back.
+    pub from: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RetrievalResult {
     pub query: String,
     pub passages: Vec<RetrievedPassage>,
-    /// Characters of passage text returned.
+    /// Files reached by `link_depth`; absent when no link was followed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linked: Option<Vec<LinkedFile>>,
+    /// Characters of passage text (and linked descriptions) returned.
     pub used_chars: u64,
     /// True when the budget cut the result short.
     pub truncated: bool,

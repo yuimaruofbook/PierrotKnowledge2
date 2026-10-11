@@ -14,7 +14,8 @@ import { Database, type Statement } from "bun:sqlite";
 import { mkdir } from "fs/promises";
 import { dirname } from "path";
 import { messages } from "../../shared/messages";
-import { PARA_WEIGHTS, paraOf } from "../../shared/okf/para";
+import { PARA_DIRS, PARA_ORDER, PARA_WEIGHTS, paraOf } from "../../shared/okf/para";
+import { lifecycleWeight } from "../../shared/okf/lifecycle";
 import type {
   ChunkHit,
   ConceptDocument,
@@ -78,6 +79,29 @@ interface ChunkRow {
   path: string;
   title: string;
   type: string;
+  tags?: string;
+}
+
+/**
+ * SQL for `paraDepth`, or null when every class is in range.
+ *
+ * Done in the query rather than after it so a narrow depth still returns a
+ * full page of hits; the same rule, per path, is `withinParaDepth`. Depth 3
+ * and up name what to leave out (the unfiled concepts are resources, so they
+ * have no folder to name); depths 1 and 2 name what to keep.
+ */
+function paraDepthClause(depth: number): { sql: string; params: string[] } | null {
+  if (!Number.isFinite(depth)) return null;
+  const d = Math.max(1, Math.trunc(depth));
+  if (d >= PARA_ORDER.length) return null;
+
+  const like = (cls: (typeof PARA_ORDER)[number]) => `${PARA_DIRS[cls]}/%`;
+  if (d >= 3) {
+    const out = PARA_ORDER.slice(d);
+    return { sql: out.map(() => "d.id NOT LIKE ?").join(" AND "), params: out.map(like) };
+  }
+  const kept = PARA_ORDER.slice(0, d);
+  return { sql: `(${kept.map(() => "d.id LIKE ?").join(" OR ")})`, params: kept.map(like) };
 }
 
 export interface SearchOptions extends SearchFilters {
@@ -308,6 +332,19 @@ export class FtsIndex {
       where.push("d.tags LIKE ?");
       params.push(`%${TAG_SEP}${tag}${TAG_SEP}%`);
     }
+    // DEAD is retired material: out of every result unless asked for. GLOB is
+    // case-sensitive, so a bundle's own `dead` tag is not hidden.
+    if (!options.includeDead) {
+      where.push("d.tags NOT GLOB ?");
+      params.push(`*${TAG_SEP}DEAD${TAG_SEP}*`);
+    }
+    if (options.paraDepth !== undefined) {
+      const clause = paraDepthClause(options.paraDepth);
+      if (clause) {
+        where.push(clause.sql);
+        params.push(...clause.params);
+      }
+    }
 
     const limit = Math.max(1, Math.min(options.limit ?? 20, 200));
     // Over-fetch: grouping means one dense document can crowd out the rest, and
@@ -315,23 +352,28 @@ export class FtsIndex {
     params.push(options.groupByDocument ? limit * 5 : limit * 3);
 
     let rows: ChunkRow[];
+    // Prepared here, not cached, so it must be finalized: a statement left to
+    // the GC keeps the database open, and the next rm of the bundle fails with
+    // EBUSY on Windows whenever the GC runs late (under load).
+    let statement: Statement | undefined;
     try {
-      rows = this.handle
-        .prepare(
-          `SELECT c.chunk_id, c.doc_id, c.ord, c.heading_path, c.text,
-                  d.path, d.title, d.type,
-                  bm25(chunks_fts, 0, 12.0, 4.0, 1.0) AS score
-             FROM chunks_fts
-             JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
-             JOIN docs   d ON d.id = c.doc_id
-            WHERE ${where.join(" AND ")}
-            ORDER BY score
-            LIMIT ?`
-        )
-        .all(...(params as never[])) as ChunkRow[];
+      statement = this.handle.prepare(
+        `SELECT c.chunk_id, c.doc_id, c.ord, c.heading_path, c.text,
+                d.path, d.title, d.type, d.tags,
+                bm25(chunks_fts, 0, 12.0, 4.0, 1.0) AS score
+           FROM chunks_fts
+           JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
+           JOIN docs   d ON d.id = c.doc_id
+          WHERE ${where.join(" AND ")}
+          ORDER BY score
+          LIMIT ?`
+      );
+      rows = statement.all(...(params as never[])) as ChunkRow[];
     } catch {
       // A half-typed query is not a fault.
       return [];
+    } finally {
+      statement?.finalize();
     }
 
     const hits: ChunkHit[] = rows.map((row) => ({
@@ -351,7 +393,8 @@ export class FtsIndex {
       // PARA is a priority order, so it multiplies relevance rather than
       // replacing it: what matches is still decided by BM25, but between two
       // comparable matches the active project wins and the shelved note loses.
-      score: -row.score * PARA_WEIGHTS[paraOf(row.doc_id)],
+      // A Product concept adds a smaller nudge of the same kind.
+      score: -row.score * PARA_WEIGHTS[paraOf(row.doc_id)] * lifecycleWeight(unpackTags(row.tags ?? "")),
       // The doc id is wiki-relative; `path` still carries the `wiki/` prefix,
       // which would make every note look unfiled.
       para: paraOf(row.doc_id),

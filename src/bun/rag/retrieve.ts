@@ -7,7 +7,13 @@
  * be traced back to a file the human can open and correct.
  */
 
-import type { ChunkHit, RetrievalResult, RetrievedPassage, SearchFilters } from "../../shared/types";
+import type {
+  ChunkHit,
+  LinkedFile,
+  RetrievalResult,
+  RetrievedPassage,
+  SearchFilters,
+} from "../../shared/types";
 import { chunkAnchor, isContentToken, normalizeForIndex, parseQueryTerms } from "../../shared/okf";
 import type { FtsIndex } from "./fts";
 
@@ -50,6 +56,12 @@ export interface RetrieveOptions extends SearchFilters {
   expandNeighbours?: boolean;
   /** Content tokens a passage must share with the query. */
   minContentMatches?: number;
+  /**
+   * Links to follow from the retrieved files (0-2). Applied by
+   * `Workspace.retrieve`, which has the link graph; the index-level
+   * function ignores it.
+   */
+  linkDepth?: number;
 }
 
 /**
@@ -73,6 +85,8 @@ export function retrieve(
   if (options.type) filters.type = options.type;
   if (options.tags?.length) filters.tags = options.tags;
   if (options.pathPrefix) filters.pathPrefix = options.pathPrefix;
+  if (options.includeDead) filters.includeDead = true;
+  if (options.paraDepth !== undefined) filters.paraDepth = options.paraDepth;
 
   // Retrieval takes a question, not a term: loose matching keeps recall up and
   // lets BM25 decide which passages actually answer it.
@@ -237,6 +251,22 @@ export function passageLocation(passage: RetrievedPassage): string {
 }
 
 /**
+ * Render the files reached by following links: path, title and the one-line
+ * description, with the hop count and the file each came from so the chain can
+ * be walked back. Shared by retrieval and context packs.
+ */
+export function formatLinked(linked: readonly LinkedFile[]): string {
+  const lines = ["## Linked files (descriptions only - read_file to open one)", ""];
+  for (const file of linked) {
+    const description = file.description ? `: ${file.description}` : "";
+    lines.push(
+      `- \`${file.path}\` — ${file.title} (${file.type}) · hop ${file.hops} from \`${file.from}\`${description}`
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * Render a retrieval result as Markdown for an agent.
  *
  * Each passage is prefixed with its anchor so the model can cite it, and the
@@ -258,9 +288,10 @@ export function formatRetrieval(result: RetrievalResult): string {
   });
 
   const header = `Retrieved ${result.passages.length} passage(s) for: ${result.query}`;
+  const linked = result.linked?.length ? `\n\n${formatLinked(result.linked)}` : "";
   const footer = result.truncated
     ? "\n\n_(truncated to fit the context budget — narrow the query or raise budget_chars for more)_"
     : "";
 
-  return `${header}\n\n${parts.join("\n\n---\n\n")}${footer}`;
+  return `${header}\n\n${parts.join("\n\n---\n\n")}${linked}${footer}`;
 }

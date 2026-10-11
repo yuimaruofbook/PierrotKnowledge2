@@ -262,6 +262,9 @@ export function createRequestHandlers(
     search: ({ query, limit, type, tags, pathPrefix }) =>
       workspace.search(query, {
         limit: limit ?? 20,
+        // A person searching must be able to find a retired note to revive it;
+        // only agents are shielded from DEAD by default.
+        includeDead: true,
         ...(type ? { type } : {}),
         ...(tags?.length ? { tags } : {}),
         ...(pathPrefix ? { pathPrefix } : {}),
@@ -301,6 +304,7 @@ export function createRequestHandlers(
 
     rebuildIndex: () => workspace.rebuildIndex(),
 
+    baseView: ({ path, view }) => workspace.baseView(path, view),
     rebuildRag: () => workspace.rebuildRag(),
 
     checkConformance: () => workspace.conformanceIssues(),
