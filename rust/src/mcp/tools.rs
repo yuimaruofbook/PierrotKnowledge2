@@ -7,7 +7,7 @@
 //! (`String(x)`, truthiness, `typeof x === "number"`); the helpers below
 //! reproduce those so odd inputs get the same answer from both servers.
 
-use crate::okf::bundle::WriteOptions;
+use crate::okf::bundle::{DanglingRelation, WriteOptions};
 use crate::okf::error::Result;
 use crate::okf::loops::{DefineOptions, EndOptions, StartOptions, SuggestedSkill};
 use crate::okf::parser::{skeleton_concept, ConceptSkeletonOptions};
@@ -19,6 +19,9 @@ use crate::shared::js_compat::{ends_with_ascii_ci, js_trim, locale_compare};
 use crate::shared::messages;
 use crate::shared::okf::activity::ActivityFilter;
 use crate::shared::okf::base::is_base_path;
+use crate::shared::okf::canvas::is_canvas_path;
+use crate::shared::okf::canvas::MAX_CANVAS_EDGES;
+use crate::shared::okf::canvas_graph::MAX_GRAPH_NODES;
 use crate::shared::okf::concept::is_concept_path;
 use crate::shared::okf::frontmatter::split_frontmatter;
 use crate::shared::okf::lifecycle::parse_lifecycle;
@@ -26,7 +29,7 @@ use crate::shared::okf::loop_::RunStatus;
 use crate::shared::okf::para::{para_of, parse_para_class, ParaClass, PARA_ORDER};
 use crate::shared::okf::workspace_files::{Task, TaskStatus};
 use crate::shared::types::SearchFilters;
-use crate::workspace::{TaskChanges, TaskInput, Workspace};
+use crate::workspace::{CanvasFromLinks, TaskChanges, TaskInput, Workspace};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone};
 use regex::Regex;
 use serde::Serialize;
@@ -77,6 +80,15 @@ pub static TOOLS: LazyLock<Vec<Value>> = LazyLock::new(|| {
         _ => unreachable!("tools.json is a JSON array"),
     }
 });
+
+/// The relations a move could not follow, for the end of its answer.
+fn dangling_note(dangling: &[DanglingRelation]) -> String {
+    if dangling.is_empty() {
+        return String::new();
+    }
+    let list: Vec<String> = dangling.iter().map(|d| format!("{} ({}: {})", d.path, d.kind, d.target)).collect();
+    format!(" — these relations now dangle and need a manual edit: {}", list.join("; "))
+}
 
 // ---- JS-flavoured argument access ---------------------------------------------
 
@@ -194,6 +206,29 @@ fn range_from(args: &Args) -> std::result::Result<(Option<i64>, Option<i64>), To
         }
     };
     Ok((check("para_depth", 1, 4)?, check("link_depth", 0, 2)?))
+}
+
+/// `depth` (0-3) and `para_depth` (1-4) for `canvas_from_links`, validated, or
+/// the message to fail with. Rejected rather than clamped, like `range_from`.
+fn canvas_range_from(args: &Args) -> std::result::Result<(Option<i64>, Option<i64>), ToolResult> {
+    let check = |key: &str, min: i64, max: i64| -> std::result::Result<Option<i64>, ToolResult> {
+        let value = match args.get(key) {
+            None | Some(Value::Null) => return Ok(None),
+            Some(value) => value,
+        };
+        let whole = match value {
+            Value::Number(n) => n.as_f64().filter(|f| f.fract() == 0.0 && *f >= min as f64 && *f <= max as f64),
+            _ => None,
+        };
+        match whole {
+            Some(f) => Ok(Some(f as i64)),
+            None => Err(fail(format!(
+                "{key} must be an integer from {min} to {max}: {}",
+                js_string(value)
+            ))),
+        }
+    };
+    Ok((check("depth", 0, 3)?, check("para_depth", 1, 4)?))
 }
 
 enum DateArg {
@@ -586,7 +621,7 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
             } else {
                 String::new()
             };
-            Ok(text(format!("Moved {from} → {}{note}", result.moved)))
+            Ok(text(format!("Moved {from} → {}{note}{}", result.moved, dangling_note(&result.dangling_relations))))
         }
 
         "delete_file" => {
@@ -869,6 +904,7 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
             let result = ws.set_para(&path, target, Actor::Agent, None)?;
             Ok(text(if result.moved {
                 messages::para_moved(&result.from, &result.to, target.label())
+                    + &dangling_note(&result.dangling_relations)
             } else {
                 messages::para_already(&path, target.label())
             }))
@@ -1019,6 +1055,100 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
             }
             let order: Vec<&str> = PARA_ORDER.iter().map(|c| c.as_str()).collect();
             Ok(json_text(&json!({ "order": order, "groups": groups })))
+        }
+
+        "canvas_list" => Ok(json_text(&ws.canvas_list()?)),
+
+        "canvas_read" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            if !is_canvas_path(&path) {
+                return Ok(fail("'path' must end in .canvas"));
+            }
+            Ok(json_text(&ws.canvas_read(&path)?))
+        }
+
+        "canvas_write" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            let Some(Value::String(content)) = args.get("content") else {
+                return Ok(fail("'content' is required"));
+            };
+            let actor = Some(str_arg(args, "actor")).filter(|a| !a.is_empty());
+            ws.canvas_write(&path, content, Actor::Agent, Some(actor.as_deref().unwrap_or("process:mcp")))?;
+            Ok(text(format!("Wrote {path}")))
+        }
+
+        "canvas_from_links" => {
+            let path = str_arg(args, "path");
+            if path.is_empty() {
+                return Ok(fail("'path' is required"));
+            }
+            if !is_canvas_path(&path) {
+                return Ok(fail("'path' must end in .canvas"));
+            }
+            let root = str_arg(args, "root");
+            let query = str_arg(args, "query");
+            if js_trim(&root).is_empty() && js_trim(&query).is_empty() {
+                return Ok(fail("'root' or 'query' is required"));
+            }
+            let (depth, para_depth) = try_result!(canvas_range_from(args));
+            let actor = Some(str_arg(args, "actor")).filter(|a| !a.is_empty());
+            let result = ws.canvas_from_links(&CanvasFromLinks {
+                root: (!js_trim(&root).is_empty()).then_some(root),
+                query: (!js_trim(&query).is_empty()).then_some(query),
+                depth,
+                include_dead: args.get("include_dead") == Some(&Value::Bool(true)),
+                para_depth,
+                group_by_para: args.get("group_by_para") == Some(&Value::Bool(true)),
+                overwrite: args.get("overwrite") == Some(&Value::Bool(true)),
+                path,
+                by: Actor::Agent,
+                actor: Some(actor.unwrap_or_else(|| "process:mcp".to_string())),
+            })?;
+            let noun = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+            let truncated = if result.truncated {
+                format!(" Left some concepts or edges out (limits: {MAX_GRAPH_NODES} concepts, {MAX_CANVAS_EDGES} edges); use a smaller depth or para_depth.")
+            } else {
+                String::new()
+            };
+            Ok(text(format!(
+                "Wrote {}: {}, {}.{truncated}\n\n{}",
+                result.path,
+                noun(result.concepts, "concept"),
+                noun(result.edges, "edge"),
+                result.outline
+            )))
+        }
+
+        "graph_schema" => {
+            // Undeclared types and kinds are advice about the schema, so they live here
+            // and check_conformance keeps its original shape.
+            let warnings = ws.schema_warnings()?;
+            let mut schema = ws.graph_schema()?;
+            if !warnings.is_empty() {
+                let rows: Vec<Value> = warnings
+                    .into_iter()
+                    .map(|(path, warnings)| json!({ "path": path, "warnings": warnings }))
+                    .collect();
+                if let Some(map) = schema.as_object_mut() {
+                    map.insert("warnings".into(), Value::Array(rows));
+                }
+            }
+            Ok(json_text(&schema))
+        }
+
+        "system_map" => {
+            let actor = Some(str_arg(args, "actor")).filter(|a| !a.is_empty());
+            Ok(text(ws.system_map(
+                args.get("refresh") == Some(&Value::Bool(true)),
+                Some(actor.as_deref().unwrap_or("process:mcp")),
+                TOOLS.len(),
+            )?))
         }
 
         "loop_define" => {
@@ -1209,3 +1339,7 @@ mod features_tests;
 #[cfg(test)]
 #[path = "tools_bases_tests.rs"]
 mod bases_tests;
+
+#[cfg(test)]
+#[path = "tools_canvas_tests.rs"]
+mod canvas_tests;

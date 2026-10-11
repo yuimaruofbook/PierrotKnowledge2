@@ -7,20 +7,25 @@
 pub mod activity;
 pub mod base;
 pub mod base_expr;
+pub mod canvas;
+pub mod canvas_graph;
 pub mod capture;
 pub mod chunk;
 pub mod concept;
 pub mod daily;
 pub mod frontmatter;
+pub mod graph_schema;
 pub mod knowhow;
 pub mod lifecycle;
 pub mod links;
 pub mod loop_;
 pub mod para;
+pub mod relation_edit;
 pub mod rename;
 pub mod reserved;
 pub mod skill;
 pub mod skill_rank;
+pub mod systemmap;
 pub mod text;
 pub mod workspace_files;
 

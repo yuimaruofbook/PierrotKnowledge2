@@ -10,11 +10,13 @@ use super::nodepath;
 use super::paths::{LOOPS_DIR, RAG_DIR, RAW_DIR, SKILLS_DIR, WIKI_DIR};
 use crate::shared::okf::activity::{ACTIVITY_DIR, ACTIVITY_TITLE};
 use crate::shared::okf::base::{BASES_DIR, BASES_TITLE};
+use crate::shared::okf::graph_schema::{CANVASES_DIR, CANVASES_TITLE, GRAPH_DIR, GRAPH_TITLE};
 use crate::shared::okf::knowhow::{KNOWHOW_DIR, KNOWHOW_TITLE};
 use crate::shared::okf::para::PARA_ORDER;
 use crate::shared::okf::reserved::{empty_log_md, render_index_md, IndexOptions, OKF_VERSION};
+use crate::shared::okf::systemmap::render_system_map;
 use crate::shared::okf::workspace_files::{
-    render_human_template, render_map, render_tasks, TaskFile, HUMAN_FILE, MAP_FILE, TASK_FILE,
+    render_human_template, render_map, render_tasks, TaskFile, HUMAN_FILE, MAP_FILE, SYSTEMMAP_FILE, TASK_FILE,
 };
 
 const AGENTS_MD_TEMPLATE: &str = include_str!("../../../templates/AGENTS.md");
@@ -26,6 +28,7 @@ const ANSWER_SKILL: &str = include_str!("../../../templates/bundle-skeleton/skil
 const LINT_SKILL: &str = include_str!("../../../templates/bundle-skeleton/skills/wiki-lint/SKILL.md");
 const PRODUCTS_BASE: &str =
     include_str!("../../../templates/bundle-skeleton/wiki/bases/products-and-dead.base");
+const GRAPH_SCHEMA: &str = include_str!("../../../templates/bundle-skeleton/wiki/graph/schema.md");
 const LOOPS_README: &str = include_str!("../../../templates/bundle-skeleton/loops/README.md");
 const INGEST_LOOP: &str = include_str!("../../../templates/bundle-skeleton/loops/ingest-notes.md");
 const LINT_LOOP: &str = include_str!("../../../templates/bundle-skeleton/loops/weekly-lint.md");
@@ -86,6 +89,8 @@ pub fn scaffold_bundle(root: &str) -> Result<ScaffoldResult> {
     error::mkdir_p(&nodepath::join(&[&wiki_root, ACTIVITY_DIR]))?;
     // Saved list and aggregate views (Obsidian Bases), not concepts.
     error::mkdir_p(&nodepath::join(&[&wiki_root, BASES_DIR]))?;
+    // The knowledge-graph design: a schema (a concept) and canvases (not concepts).
+    error::mkdir_p(&nodepath::join(&[&wiki_root, CANVASES_DIR]))?;
 
     let skills = |category: &str, name: &str, file: &str| {
         nodepath::join(&[WIKI_DIR, SKILLS_DIR, category, name, file])
@@ -98,6 +103,9 @@ pub fn scaffold_bundle(root: &str) -> Result<ScaffoldResult> {
         // the other two start as templates because an empty prompt is answered
         // and an empty file is not.
         (MAP_FILE.to_string(), render_map(None)),
+        // The map of the system itself. Its generated section is filled in by
+        // `system_map { refresh: true }`, which needs the bundle open.
+        (SYSTEMMAP_FILE.to_string(), render_system_map(None, None).expect("a new file has no markers to get wrong")),
         (HUMAN_FILE.to_string(), render_human_template()),
         (
             TASK_FILE.to_string(),
@@ -145,6 +153,15 @@ pub fn scaffold_bundle(root: &str) -> Result<ScaffoldResult> {
         ),
         // One working example, so a base is something to copy rather than to invent.
         (nodepath::join(&[WIKI_DIR, BASES_DIR, "products-and-dead.base"]), PRODUCTS_BASE.to_string()),
+        (
+            nodepath::join(&[WIKI_DIR, GRAPH_DIR, "index.md"]),
+            render_index_md(GRAPH_TITLE, &[], &IndexOptions::default()),
+        ),
+        (nodepath::join(&[WIKI_DIR, GRAPH_DIR, "schema.md"]), GRAPH_SCHEMA.to_string()),
+        (
+            nodepath::join(&[WIKI_DIR, CANVASES_DIR, "index.md"]),
+            render_index_md(CANVASES_TITLE, &[], &IndexOptions::default()),
+        ),
     ];
 
     for (rel, content) in files {

@@ -34,6 +34,7 @@ describe("opening a file", () => {
 
   test("a base opens as its table, not as YAML", () => {
     expect(initialViewMode("wiki/bases/products-and-dead.base", false)).toBe("preview");
+    expect(initialViewMode("wiki/graph/canvases/x.canvas", false)).toBe("preview");
     expect(initialViewMode("wiki/bases/X.BASE", false)).toBe("preview");
   });
 

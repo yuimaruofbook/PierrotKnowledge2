@@ -10,7 +10,7 @@ use super::error::{OkfError, Result};
 use super::nodepath;
 use crate::shared::messages;
 use crate::shared::okf::daily::DAILY_DIR;
-use crate::shared::okf::workspace_files::{HUMAN_FILE, MAP_FILE, TASK_FILE};
+use crate::shared::okf::workspace_files::{HUMAN_FILE, MAP_FILE, SYSTEMMAP_FILE, TASK_FILE};
 use crate::shared::types::Layer;
 
 pub const RAW_DIR: &str = "raw";
@@ -178,6 +178,11 @@ impl BundlePaths {
     /// contract for editing that layer.
     pub fn map_md_path(&self) -> String {
         self.at_root(MAP_FILE)
+    }
+
+    /// What the system is made of and how to extend it (`systemmap.rs`).
+    pub fn system_map_md_path(&self) -> String {
+        self.at_root(SYSTEMMAP_FILE)
     }
 
     /// What the agent should know about the person it works for.

@@ -12,7 +12,7 @@
 use super::error::{self, now_iso, OkfError, Result};
 use super::migrate::{migrate_layout, MigrationResult};
 use super::nodepath;
-use super::parser::{parse_concept, ParseConceptOptions};
+use super::parser::{concept_links, parse_concept, parse_frontmatter_map, ParseConceptOptions};
 use super::paths::{is_contained, same_path, to_posix, Actor, BundlePaths, RAW_DIR, WIKI_DIR};
 use crate::shared::binary::inspect;
 use crate::shared::js_compat::{ends_with_ascii_ci, locale_compare};
@@ -22,7 +22,8 @@ use crate::shared::okf::concept::{
     is_reserved_filename,
 };
 use crate::shared::okf::frontmatter::{join_frontmatter, split_frontmatter, Eol};
-use crate::shared::okf::links::{build_backlinks, extract_links, resolve_link_target};
+use crate::shared::okf::links::{build_backlinks, resolve_link_target};
+use crate::shared::okf::relation_edit::{rebase_own_relations, relations_after_move};
 use crate::shared::okf::rename::{rebase_own_links, rewrite_links};
 use crate::shared::okf::reserved::{
     empty_log_md, insert_log_entry, read_okf_version, render_index_md, IndexEntry, IndexOptions,
@@ -32,7 +33,7 @@ use crate::shared::okf::workspace_files::{
     parse_tasks, render_map, render_tasks, TaskFile,
 };
 use crate::shared::types::{
-    BundleInfo, ConceptDocument, ConceptFrontmatter, ConformanceIssue, FileNode, LogEntry,
+    BundleInfo, ConceptDocument, ConceptFrontmatter, ConformanceIssue, FileNode, LinkKind, LogEntry,
     NodeType, ReadFileResult, WriteFileResult,
 };
 use indexmap::IndexMap;
@@ -141,6 +142,15 @@ pub struct MoveResult {
     pub moved: String,
     pub updated: Vec<String>,
     pub link_count: usize,
+    /// Relation entries that now point nowhere because their text could not be edited safely.
+    pub dangling_relations: Vec<DanglingRelation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DanglingRelation {
+    pub path: String,
+    pub kind: String,
+    pub target: String,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -187,6 +197,8 @@ pub struct ImportResult {
 pub struct UnresolvedLink {
     pub from: String,
     pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
 }
 
 pub struct Bundle {
@@ -255,7 +267,7 @@ impl Bundle {
         // Two passes: wikilinks can only be resolved once every id is known.
         let known_ids: HashSet<String> = found.iter().map(|d| d.id.clone()).collect();
         for doc in &mut found {
-            doc.links = extract_links(&doc.body, &doc.id, Some(&known_ids));
+            doc.links = concept_links(&doc.frontmatter, &doc.body, &doc.id, Some(&known_ids), &self.paths.wiki_dir);
         }
 
         let mut concepts = IndexMap::new();
@@ -335,6 +347,7 @@ impl Bundle {
                     raw,
                     mtime_ms: Some(mtime_ms),
                     known_ids: None,
+                    wiki_dir: "",
                 }));
             }
         }
@@ -492,6 +505,7 @@ impl Bundle {
             raw: content.clone(),
             mtime_ms: Some(mtime_ms),
             known_ids: Some(&known_ids),
+            wiki_dir: &self.paths.wiki_dir,
         });
         self.index_concept(concept.clone());
 
@@ -539,6 +553,7 @@ impl Bundle {
                 raw: content.to_string(),
                 mtime_ms: Some(mtime_ms),
                 known_ids: Some(&known_ids),
+                wiki_dir: &self.paths.wiki_dir,
             });
             self.index_concept(parsed.clone());
             concept = Some(parsed);
@@ -597,6 +612,7 @@ impl Bundle {
             raw: content,
             mtime_ms: Some(error::mtime_ms(&error::stat(&abs)?)),
             known_ids: Some(&known_ids),
+            wiki_dir: &self.paths.wiki_dir,
         });
         self.index_concept(concept.clone());
         Ok(Some(concept))
@@ -644,6 +660,7 @@ impl Bundle {
         // made each existing link point where it does.
         let known_ids = self.concept_ids();
         let mut updated: Vec<String> = Vec::new();
+        let mut dangling_relations: Vec<DanglingRelation> = Vec::new();
         let mut link_count = 0usize;
 
         if was_concept && is_concept_path(&self.paths.to_rel(&to_abs)) && old_id != new_id {
@@ -651,15 +668,29 @@ impl Bundle {
             // moves, while its old location is still the anchor they were
             // written against.
             let source = error::read_text(&from_abs)?;
-            let split = split_frontmatter(&source);
+            let frontmatter = parse_frontmatter_map(split_frontmatter(&source).yaml.as_deref());
+            let own = rebase_own_relations(
+                &source,
+                frontmatter.get("relations"),
+                &old_id,
+                &new_id,
+                &known_ids,
+                &self.paths.wiki_dir,
+            );
+            let split = split_frontmatter(&own.raw);
             let rebased = rebase_own_links(&split.body, &old_id, &new_id, &known_ids);
-            if rebased.count > 0 {
-                let text = match &split.yaml {
-                    None => rebased.body.clone(),
-                    Some(yaml) => join_frontmatter(yaml, &rebased.body, Eol::Lf),
+            if rebased.count > 0 || own.count > 0 {
+                let text = match (&split.yaml, rebased.count > 0) {
+                    (_, false) => own.raw.clone(),
+                    (None, true) => rebased.body.clone(),
+                    (Some(yaml), true) => join_frontmatter(yaml, &rebased.body, Eol::Lf),
                 };
                 error::write_text(&from_abs, &text)?;
-                link_count += rebased.count;
+                link_count += rebased.count + own.count;
+            }
+            let new_rel = self.paths.to_rel(&to_abs);
+            for (kind, target) in own.unsafe_entries {
+                dangling_relations.push(DanglingRelation { path: new_rel.clone(), kind, target });
             }
         }
 
@@ -679,19 +710,36 @@ impl Bundle {
 
             for (id, path, rel_path) in candidates {
                 let source = error::read_text(&path)?;
-                let split = split_frontmatter(&source);
+                // Typed relations first: they are edited in the frontmatter text
+                // in place, and whatever cannot be is reported rather than left
+                // silent.
+                let frontmatter = parse_frontmatter_map(split_frontmatter(&source).yaml.as_deref());
+                let moved = relations_after_move(
+                    &source,
+                    frontmatter.get("relations"),
+                    &id,
+                    &old_id,
+                    &new_id,
+                    &known_ids,
+                    &self.paths.wiki_dir,
+                );
+                for (kind, target) in moved.unsafe_entries {
+                    dangling_relations.push(DanglingRelation { path: rel_path.clone(), kind, target });
+                }
+                let split = split_frontmatter(&moved.raw);
                 let result = rewrite_links(&split.body, &id, &old_id, &new_id, &known_ids);
-                if result.count == 0 {
+                if result.count == 0 && moved.count == 0 {
                     continue;
                 }
 
                 let text = match &split.yaml {
+                    _ if result.count == 0 => moved.raw.clone(),
                     None => result.body.clone(),
                     Some(yaml) => join_frontmatter(yaml, &result.body, Eol::Lf),
                 };
                 error::write_text(&path, &text)?;
                 updated.push(rel_path);
-                link_count += result.count;
+                link_count += result.count + moved.count;
             }
         }
 
@@ -711,6 +759,7 @@ impl Bundle {
             moved: self.paths.to_rel(&to_abs),
             updated,
             link_count,
+            dangling_relations,
         })
     }
 
@@ -863,16 +912,27 @@ impl Bundle {
         counts
     }
 
-    /// Concepts whose wikilinks point at ids that do not exist yet.
+    /// Concepts whose wikilinks, or typed relations, point at ids that do not
+    /// exist yet. A relation says which kind it was.
     pub fn unresolved_links(&self) -> Vec<UnresolvedLink> {
         let mut out = Vec::new();
         for doc in self.concepts.values() {
             for link in &doc.links {
-                if link.resolved.is_none() && link.kind == crate::shared::types::LinkKind::Wikilink {
-                    out.push(UnresolvedLink {
+                if link.resolved.is_some() {
+                    continue;
+                }
+                match link.kind {
+                    LinkKind::Wikilink => out.push(UnresolvedLink {
                         from: doc.id.clone(),
                         target: link.target.clone(),
-                    });
+                        relation: None,
+                    }),
+                    LinkKind::Relation => out.push(UnresolvedLink {
+                        from: doc.id.clone(),
+                        target: link.target.clone(),
+                        relation: link.relation.clone(),
+                    }),
+                    LinkKind::Markdown => {}
                 }
             }
         }

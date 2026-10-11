@@ -35,6 +35,8 @@ import { PARA_DESCRIPTIONS, type ParaClass, parseParaClass } from "./para";
 export const MAP_FILE = "MAP.md";
 export const HUMAN_FILE = "human.md";
 export const TASK_FILE = "Task.md";
+/** Beside MAP.md and reserved like it; see `systemmap.ts`. */
+export const SYSTEMMAP_FILE = "SYSTEMMAP.md";
 
 /**
  * Lowercase basenames of the wiki-layer files that are not concepts.
@@ -48,6 +50,7 @@ export const WORKSPACE_FILENAMES = [
   MAP_FILE.toLowerCase(),
   HUMAN_FILE.toLowerCase(),
   TASK_FILE.toLowerCase(),
+  SYSTEMMAP_FILE.toLowerCase(),
 ] as const;
 
 export function isWorkspaceFilename(name: string): boolean {
@@ -323,6 +326,18 @@ export const MAP_ENTRIES: readonly MapEntry[] = [
     question: "繰り返す作業の設計",
     where: "wiki/loops/",
     tool: "loop_list",
+    writable: "人間 / エージェント",
+  },
+  {
+    question: "システムの全体像・拡張のしかた",
+    where: SYSTEMMAP_FILE,
+    tool: "system_map",
+    writable: "人間 / エージェント",
+  },
+  {
+    question: "概念の関係図・型付き関係・グラフスキーマ",
+    where: "wiki/graph/",
+    tool: "canvas_list / graph_schema",
     writable: "人間 / エージェント",
   },
   {

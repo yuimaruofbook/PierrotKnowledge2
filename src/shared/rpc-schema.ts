@@ -159,7 +159,12 @@ export type OkfRpcSchema = {
 
       movePath: {
         params: MovePathParams;
-        response: { moved: string; updated: string[]; linkCount: number };
+        response: {
+          moved: string;
+          updated: string[];
+          linkCount: number;
+          danglingRelations: Array<{ path: string; kind: string; target: string }>;
+        };
       };
       /** Bring a file up from raw/ into the wiki layer. Human-only. */
       promotePath: {
@@ -269,6 +274,17 @@ export type OkfRpcSchema = {
        * Without `view`, the first one. Failures are in the response, not thrown.
        */
       baseView: { params: { path: string; view?: string }; response: BaseViewResponse };
+
+      /**
+       * Draw the neighbourhood of a concept as a canvas under wiki/graph/canvases/
+       * (a name that does not clash is chosen) and say where it went.
+       */
+      canvasFromLinks: {
+        params: { root: string; depth: number; includeDead?: boolean; groupByPara?: boolean };
+        response: { path: string; concepts: number; edges: number; truncated: boolean };
+      };
+      /** An empty canvas in the default folder, named after `name`. */
+      newCanvas: { params: { name?: string }; response: { path: string } };
 
       rebuildIndex: { params: void; response: { rows: number } };
       rebuildRag: { params: void; response: { indexed: number } };

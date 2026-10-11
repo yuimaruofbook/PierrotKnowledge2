@@ -11,6 +11,9 @@ import { messages } from "../../shared/messages";
 import { PARA_LABELS, PARA_ORDER, paraOf, parseParaClass } from "../../shared/okf/para";
 import { parseLifecycle } from "../../shared/okf/lifecycle";
 import { isBasePath } from "../../shared/okf/base";
+import { isCanvasPath } from "../../shared/okf/canvas";
+import { MAX_GRAPH_NODES } from "../../shared/okf/canvas-graph";
+import { MAX_CANVAS_EDGES } from "../../shared/okf/canvas";
 import type { Task, TaskStatus } from "../../shared/okf/workspace-files";
 import type { Workspace } from "../workspace";
 import { isConceptPath, splitFrontmatter } from "../../shared/okf";
@@ -357,7 +360,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "move_file",
     title: "Move or rename",
     description:
-      "Move or rename a file within wiki/ or .rag/, rewriting every link that pointed at it so the graph stays intact. Always prefer this over write_file + delete_file, which would silently break inbound links. Files in raw/ cannot be moved by an agent: promoting unreviewed material into the canonical layer is a human decision, so ask the user to do it from the UI.",
+      "Move or rename a file within wiki/ or .rag/, rewriting every link that pointed at it (body links and the frontmatter relations entries, edited in place) so the graph stays intact; a relation it cannot edit safely is listed in the answer as dangling. Always prefer this over write_file + delete_file, which would silently break inbound links. Files in raw/ cannot be moved by an agent: promoting unreviewed material into the canonical layer is a human decision, so ask the user to do it from the UI.",
     inputSchema: {
       type: "object",
       properties: {
@@ -396,7 +399,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "check_conformance",
     title: "Check conformance",
     description:
-      "Report every document that violates OKF v0.2 §11 — missing frontmatter, missing 'type', or frontmatter on a reserved file.",
+      "Report every document that violates OKF v0.2 §11 — missing frontmatter, missing 'type', or frontmatter on a reserved file. Schema warnings (undeclared concept types and relation kinds) are not violations and are reported by graph_schema.",
     inputSchema: { type: "object", properties: {} },
   },
   {
@@ -629,6 +632,87 @@ export const TOOLS: readonly ToolDefinition[] = [
     },
   },
 
+  // ---- canvases and the graph ----
+  //
+  // Relationship diagrams in the JSON Canvas format Obsidian reads, and the
+  // schema that says which concept types and relation kinds the bundle uses.
+  {
+    name: "canvas_list",
+    title: "List canvases",
+    description:
+      "List the .canvas files under wiki/ (JSON Canvas 1.0, as Obsidian reads it) with their node and edge counts. A canvas is a relationship diagram: file nodes pointing at concepts, text, link and group nodes, and edges between them. Check here before drawing a new one.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "canvas_read",
+    title: "Read a canvas",
+    description:
+      "Read one .canvas file as structured JSON ('canvas': nodes and edges exactly as stored) plus a compact text 'outline': nodes by group with file nodes resolved to the concept's title and description, then the edges with their labels. Read the outline to understand a diagram without rendering it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Bundle-relative path of the .canvas file, e.g. wiki/graph/canvases/overview.canvas." },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "canvas_write",
+    title: "Write a canvas",
+    description:
+      "Create or replace a .canvas file under wiki/ (not in a hidden folder). The JSON is checked against the JSON Canvas 1.0 spec first (node types text, file, link and group; integer x, y, width and height; edges between existing node ids; sides top/right/bottom/left; ends none/arrow; colours '1'-'6' or #hex) and within bounds (1 MiB, 2000 nodes, 5000 edges, 32 levels deep); nothing is written if it is invalid. The text is saved exactly as given, so unknown keys and the order of nodes and edges survive a round trip with Obsidian. A file node's 'file' is a bundle-relative path such as wiki/3-resources/foo.md.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Bundle-relative path ending in .canvas, under wiki/, e.g. wiki/graph/canvases/overview.canvas." },
+        content: { type: "string", description: "The full JSON text of the canvas." },
+        actor: { type: "string", description: "Who is writing, e.g. process:claude-code." },
+      },
+      required: ["path", "content"],
+    },
+  },
+  {
+    name: "canvas_from_links",
+    title: "Draw concept relationships",
+    description:
+      "Draw the neighbourhood of a concept (root) or of what a retrieval query finds (query, its top 5 hits) as a canvas, following wiki links, Markdown links and typed relations in both directions up to depth steps (0-3, default 1), and save it. Layout is deterministic: a column per distance from the root, concepts ordered by path, fixed sizes; plain links are unlabeled, typed relations carry their kind; roots are green, DEAD concepts red. Links to missing concepts and self-links are not drawn. At most 150 concepts and 5000 edges are drawn. Refuses to replace an existing canvas unless overwrite is true. Returns where it was saved and the text outline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        root: { type: "string", description: "The concept to centre on: its id (topics/foo), its path (wiki/topics/foo.md) or a unique bare name." },
+        query: { type: "string", description: "Instead of (or as well as) root: a search query whose best hits are the centre." },
+        depth: { type: "number", description: "How many link steps out to follow, 0-3 (default 1)." },
+        include_dead: INCLUDE_DEAD,
+        para_depth: PARA_DEPTH,
+        group_by_para: { type: "boolean", description: "Frame concepts of the same PARA class in each column with a group node (default false)." },
+        path: { type: "string", description: "Where to save, ending in .canvas (under wiki/). A bare file name goes in wiki/graph/canvases/." },
+        overwrite: { type: "boolean", description: "Replace a canvas that already exists at path (default false: refuse, so a hand-made canvas is not lost)." },
+        actor: { type: "string", description: "Who is writing, e.g. process:claude-code." },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "graph_schema",
+    title: "Read the graph schema",
+    description:
+      "Read wiki/graph/schema.md parsed: the concept 'types' and relation 'kinds' (name, description, optional from/to types) this bundle declares. Concepts declare typed relations in their frontmatter as relations: {kind: [path or [[link]], ...]}; its 'warnings' lists concept types and relation kinds not declared here (never violations). If 'exists' is false the bundle has no schema and nothing is checked.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "system_map",
+    title: "Read SYSTEMMAP.md",
+    description:
+      "Read SYSTEMMAP.md, the map of the system itself: layers, folders, tool groups, where bases, canvases, skills, loops, know-how and the graph live, and how to extend each. Between its markers is an auto-generated section with the current counts and listings (concepts per PARA and type, bases, canvases, skills, loops, know-how, schema types and kinds, tool count). With refresh true, that section alone is regenerated and saved (text outside the markers is never touched; a bundle without the file gets it). Refresh after adding types, relation kinds, bases, canvases, skills or loops.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        refresh: { type: "boolean", description: "Regenerate and save the auto-generated section (default false: just read)." },
+        actor: { type: "string", description: "Who is refreshing, e.g. process:claude-code." },
+      },
+    },
+  },
+
   // ---- loops ----
   //
   // The before/after bookends. `loop_start` is deliberately the single call an
@@ -819,6 +903,31 @@ function rangeFrom(args: Record<string, unknown>): { paraDepth?: number; linkDep
   if (typeof link === "string") return link;
   if (link !== undefined) out.linkDepth = link;
   return out;
+}
+
+/**
+ * `depth` (0-3) and `para_depth` (1-4) for `canvas_from_links`, validated, or
+ * the message to fail with. Rejected rather than clamped, like `rangeFrom`.
+ */
+function canvasRangeFrom(args: Record<string, unknown>): { depth?: number; paraDepth?: number } | string {
+  const out: { depth?: number; paraDepth?: number } = {};
+  for (const [key, min, max] of [["depth", 0, 3], ["para_depth", 1, 4]] as const) {
+    const value = args[key];
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+      return `${key} must be an integer from ${min} to ${max}: ${String(value)}`;
+    }
+    if (key === "depth") out.depth = value;
+    else out.paraDepth = value;
+  }
+  return out;
+}
+
+/** The relations a move could not follow, for the end of its answer. */
+function danglingNote(dangling: ReadonlyArray<{ path: string; kind: string; target: string }>): string {
+  if (dangling.length === 0) return "";
+  const list = dangling.map((d) => `${d.path} (${d.kind}: ${d.target})`).join("; ");
+  return ` — these relations now dangle and need a manual edit: ${list}`;
 }
 
 export async function callTool(
@@ -1032,7 +1141,7 @@ export async function callTool(
         const note = result.linkCount
           ? ` — updated ${result.linkCount} link(s) in ${result.updated.length} file(s)`
           : "";
-        return text(`Moved ${from} → ${result.moved}${note}`);
+        return text(`Moved ${from} → ${result.moved}${note}${danglingNote(result.danglingRelations)}`);
       }
 
       case "delete_file": {
@@ -1241,7 +1350,7 @@ export async function callTool(
         const result = await workspace.setPara(path, target, "agent");
         return text(
           result.moved
-            ? messages.paraMoved(result.from, result.to, PARA_LABELS[target])
+            ? messages.paraMoved(result.from, result.to, PARA_LABELS[target]) + danglingNote(result.danglingRelations)
             : messages.paraAlready(path, PARA_LABELS[target])
         );
       }
@@ -1344,6 +1453,73 @@ export async function callTool(
 Warnings: ${warnings.join("; ")}` : `Wrote ${path}`
         );
       }
+
+      case "canvas_list":
+        return json(await workspace.canvasList());
+
+      case "canvas_read": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        if (!isCanvasPath(path)) return fail("'path' must end in .canvas");
+        return json(await workspace.canvasRead(path));
+      }
+
+      case "canvas_write": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        if (typeof args.content !== "string") return fail("'content' is required");
+        await workspace.canvasWrite(path, args.content, {
+          by: "agent",
+          actor: str(args, "actor") || "process:mcp",
+        });
+        return text(`Wrote ${path}`);
+      }
+
+      case "canvas_from_links": {
+        const path = str(args, "path");
+        if (!path) return fail("'path' is required");
+        if (!isCanvasPath(path)) return fail("'path' must end in .canvas");
+        const root = str(args, "root");
+        const query = str(args, "query");
+        if (!root.trim() && !query.trim()) return fail("'root' or 'query' is required");
+        const range = canvasRangeFrom(args);
+        if (typeof range === "string") return fail(range);
+        const result = await workspace.canvasFromLinks({
+          ...(root.trim() ? { root } : {}),
+          ...(query.trim() ? { query } : {}),
+          ...range,
+          includeDead: args.include_dead === true,
+          groupByPara: args.group_by_para === true,
+          overwrite: args.overwrite === true,
+          path,
+          by: "agent",
+          actor: str(args, "actor") || "process:mcp",
+        });
+        const noun = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+        return text(
+          `Wrote ${result.path}: ${noun(result.concepts, "concept")}, ${noun(result.edges, "edge")}.${
+            result.truncated ? ` Left some concepts or edges out (limits: ${MAX_GRAPH_NODES} concepts, ${MAX_CANVAS_EDGES} edges); use a smaller depth or para_depth.` : ""
+          }\n\n${result.outline}`
+        );
+      }
+
+      case "graph_schema":
+      {
+        // Undeclared types and kinds are advice about the schema, so they live here
+        // and check_conformance keeps its original shape.
+        const warnings = workspace.schemaWarnings();
+        const schema = workspace.graphSchema();
+        return json(warnings.length > 0 ? { ...schema, warnings } : schema);
+      }
+
+      case "system_map":
+        return text(
+          await workspace.systemMap({
+            refresh: args.refresh === true,
+            actor: str(args, "actor") || "process:mcp",
+            toolCount: TOOLS.length,
+          })
+        );
 
       case "loop_define": {
         const design = await workspace.requireLoops().define({

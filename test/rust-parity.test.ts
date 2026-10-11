@@ -1250,6 +1250,560 @@ views:
   return out;
 }
 
+/**
+ * Canvases, typed relations, the graph schema and SYSTEMMAP.md: every new tool
+ * and parameter, its error paths, the layout over several graphs (cycles,
+ * self-links, unresolved links, DEAD nodes, Japanese names), schema warnings,
+ * SYSTEMMAP refreshes that must leave the human text alone, and hostile
+ * canvases. Builds its own fixtures. Both servers must agree byte for byte,
+ * which for a saved canvas means the same coordinates, ids and bytes.
+ */
+function canvasScript(): ReadonlyArray<readonly [string, Record<string, unknown>]> {
+  const out: Array<readonly [string, Record<string, unknown>]> = [];
+  const add = (name: string, args: Record<string, unknown> = {}) => void out.push([name, args]);
+  // The scripts above may end on a failed open_bundle.
+  add("open_bundle", { path: "<BUNDLE>" });
+
+  const concept = (rel: string, frontmatter: string, body = "x") =>
+    add("write_file", { path: `wiki/${rel}.md`, content: note(`type: Concept\n${frontmatter}`, body) });
+  const canvas = (name: string, content: string) =>
+    add("canvas_write", { path: `wiki/graph/canvases/${name}.canvas`, content, actor: "process:parity" });
+  const read = (name: string) => add("canvas_read", { path: `wiki/graph/canvases/${name}.canvas` });
+  const show = (name: string) => add("read_file", { path: `wiki/graph/canvases/${name}.canvas` });
+  const draw = (name: string, args: Record<string, unknown>) => {
+    add("canvas_from_links", { path: name, actor: "process:parity", ...args });
+    show(name.replace(/\.canvas$/, ""));
+  };
+
+  // -- what a new bundle has
+  add("list_files", { path: "wiki/graph", recursive: true });
+  add("read_file", { path: "wiki/graph/schema.md" });
+  add("read_file", { path: "wiki/graph/index.md" });
+  add("read_file", { path: "wiki/graph/canvases/index.md" });
+  add("read_file", { path: "SYSTEMMAP.md" });
+  add("read_map");
+  add("read_agents_md");
+  add("graph_schema", { ignored: 1 });
+  add("canvas_list");
+  add("check_conformance");
+  add("system_map");
+
+  // -- graphs: a Japanese cycle with a self-link and an unresolved link, DEAD, relations of every shape
+  concept("g/アルファ", "title: アルファ\ndescription: 始まり\nrelations:\n  depends_on: [g/ベータ, \"[[ガンマ]]\"]\n  part_of: wiki/g/デルタ.md", "[[ベータ]] と [[アルファ]] と [[まだない]]");
+  concept("g/ベータ", "title: ベータ", "[[アルファ]] [ガンマ](./ガンマ.md)");
+  concept("g/ガンマ", "title: ガンマ\nrelations:\n  derived_from: g/ベータ\n  odd: 5\n  list: [1, {a: 1}]", "[[イプシロン]]");
+  concept("g/デルタ", "title: デルタ\ntags: [DEAD]", "dead end [[アルファ]]");
+  concept("g/イプシロン", "title: イプシロン\nrelations: just text", "tail");
+  concept("g/ゼータ", "title: Zeta\nrelations:\n  related_to: [g/ガンマ, nowhere/at-all]", "alone");
+  add("write_file", { path: "wiki/1-projects/g-p.md", content: note("type: Project\ntitle: Proj\nrelations:\n  depends_on: [g/アルファ]", "[[g/ガンマ]]") });
+  add("write_file", { path: "wiki/2-areas/g-a.md", content: note("type: Area\ntitle: Area\nrelations:\n  part_of: [1-projects/g-p]", "x") });
+  add("write_file", { path: "wiki/4-archive/g-z.md", content: note("type: Concept\ntitle: Old\ntags: [DEAD]\nrelations:\n  supersedes: [g/アルファ]", "x") });
+  // A link to a file written later is unresolved until the next reload; rebuild resolves them.
+  add("rebuild_rag");
+  add("backlinks", { id: "g/ガンマ" });
+  add("backlinks", { id: "g/アルファ" });
+  add("unresolved_links");
+  add("read_file", { path: "wiki/g/アルファ.md" });
+  add("read_file", { path: "wiki/g/ガンマ.md" });
+  add("list_concepts");
+  add("retrieve", { query: "dead end", link_depth: 2 });
+  add("context_pack", { task: "アルファ を調べる", link_depth: 1 });
+
+  // -- canvas_from_links: the layout, on each graph, at each depth
+  for (const depth of [0, 1, 2, 3]) draw(`ja-${depth}.canvas`, { root: "g/アルファ", depth });
+  draw("ja-dead.canvas", { root: "g/アルファ", depth: 3, include_dead: true });
+  draw("ja-grouped.canvas", { root: "g/アルファ", depth: 3, include_dead: true, group_by_para: true });
+  draw("ja-para1.canvas", { root: "g/アルファ", depth: 3, include_dead: true, para_depth: 1 });
+  draw("ja-para3.canvas", { root: "g/アルファ", depth: 3, include_dead: true, para_depth: 3 });
+  draw("self.canvas", { root: "g/ベータ", depth: 1 });
+  draw("by-path.canvas", { root: "wiki/g/ガンマ.md", depth: 2 });
+  draw("by-name.canvas", { root: "ゼータ", depth: 1 });
+  draw("by-name-md.canvas", { root: "g/ゼータ.md", depth: 1 });
+  draw("unresolved.canvas", { root: "g/ゼータ", depth: 3 });
+  draw("para-cluster.canvas", { root: "g/ガンマ", depth: 3, include_dead: true, group_by_para: true });
+  draw("proj.canvas", { root: "1-projects/g-p", depth: 3, group_by_para: true });
+  draw("query.canvas", { query: "イプシロン", depth: 1 });
+  draw("query-root.canvas", { query: "ゼータ", root: "g/ベータ", depth: 1 });
+  draw("default-depth.canvas", { root: "g/アルファ" });
+  draw("trimmed.canvas", { root: "  g/アルファ  ", query: "  ", depth: 1 });
+  add("canvas_from_links", { path: "wiki/graph/canvases/in-folder.canvas", root: "g/アルファ", depth: 1 });
+  add("canvas_from_links", { path: "wiki/g/elsewhere.canvas", root: "g/アルファ", depth: 1 });
+  add("canvas_from_links", { path: "wiki/g/elsewhere.canvas", root: "g/アルファ", depth: 2 });
+  add("canvas_from_links", { path: "ok.canvas", root: "g/アルファ", depth: 1, actor: "  " });
+  add("canvas_from_links", { path: "ok.canvas", root: "g/アルファ", depth: 1, actor: 5, include_dead: "yes", group_by_para: 1 });
+  add("canvas_from_links", { path: "UP.CANVAS", root: "g/アルファ", depth: 1 });
+  add("read_file", { path: "wiki/graph/canvases/UP.CANVAS" });
+  add("canvas_list");
+
+  // -- canvas_from_links: argument errors
+  add("canvas_from_links");
+  add("canvas_from_links", { path: "" });
+  add("canvas_from_links", { path: "x.canvas" });
+  add("canvas_from_links", { path: "x.canvas", root: "" });
+  add("canvas_from_links", { path: "x.canvas", root: "  " });
+  add("canvas_from_links", { path: "x.canvas", root: 5 });
+  add("canvas_from_links", { path: "x.canvas", query: 5 });
+  add("canvas_from_links", { root: "g/アルファ" });
+  add("canvas_from_links", { root: "g/アルファ", path: 5 });
+  add("canvas_from_links", { root: "g/アルファ", path: "x.json" });
+  add("canvas_from_links", { root: "g/アルファ", path: "x.canvas.md" });
+  for (const depth of [-1, 4, 1.5, "1", true, [], {}, 1e9]) {
+    add("canvas_from_links", { root: "g/アルファ", path: "x.canvas", depth });
+  }
+  add("canvas_from_links", { root: "g/アルファ", path: "x.canvas", depth: null });
+  for (const para_depth of [0, 5, 2.5, "2", false]) {
+    add("canvas_from_links", { root: "g/アルファ", path: "x.canvas", para_depth });
+  }
+  add("canvas_from_links", { root: "no-such-concept", path: "x.canvas" });
+  add("canvas_from_links", { root: "wiki/no/such.md", path: "x.canvas" });
+  add("canvas_from_links", { query: "zzzzqqqqxx", path: "x.canvas" });
+  add("canvas_from_links", { query: "zzzzqqqqxx", root: "g/アルファ", path: "x.canvas", depth: 0 });
+  add("canvas_from_links", { root: "g/アルファ", path: "raw/x.canvas" });
+  add("canvas_from_links", { root: "g/アルファ", path: "x/../../y.canvas" });
+  add("canvas_from_links", { root: "g/アルファ", path: "wiki/.hid/x.canvas" });
+  add("canvas_from_links", { root: "g/アルファ", path: ".okf/x.canvas" });
+  add("canvas_from_links", { root: "g/アルファ", path: "../x.canvas" });
+  add("canvas_from_links", { root: "g/アルファ", path: "wiki/x.canvas/y" });
+  // An ambiguous bare name stays unresolved.
+  concept("g/dup/same", "title: Dup one");
+  concept("g/dup2/same", "title: Dup two");
+  add("rebuild_rag");
+  add("canvas_from_links", { root: "same", path: "x.canvas" });
+  add("canvas_from_links", { root: "g/dup/same", path: "dup.canvas", depth: 0 });
+  show("dup");
+
+  // -- a big neighbourhood stops at the cap
+  const leaves = Array.from({ length: 160 }, (_, i) => `leaf${String(i).padStart(3, "0")}`);
+  add("write_file", { path: "wiki/big/hub.md", content: note("type: Concept\ntitle: Hub", leaves.map((l) => `[[${l}]]`).join(" ")) });
+  for (const l of leaves) add("write_file", { path: `wiki/big/${l}.md`, content: note("type: Concept", "x") });
+  add("rebuild_rag");
+  draw("big.canvas", { root: "big/hub", depth: 1 });
+  draw("big-grouped.canvas", { root: "big/hub", depth: 1, group_by_para: true });
+
+  // -- canvas_write: the spec, accepted
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, type: "text", text: id, x: 0, y: 0, width: 100, height: 50, ...extra });
+  const json = (value: unknown) => JSON.stringify(value);
+  canvas("empty", "{}");
+  canvas("empty2", '{"nodes":[],"edges":[]}');
+  canvas(
+    "full",
+    json({
+      nodes: [
+        { id: "g", type: "group", label: "グループ", background: "bg.png", backgroundStyle: "cover", x: -50, y: -50, width: 700, height: 400, color: "#ABC" },
+        node("a", { x: 10, y: 10, color: "3", extra: { keep: [1, 2] } }),
+        { id: "f", type: "file", file: "wiki/hello.md", subpath: "#heading", x: 200, y: 10, width: 200, height: 60 },
+        { id: "f2", type: "file", file: "g/ベータ.md", x: 200, y: 100, width: 200, height: 60 },
+        { id: "f3", type: "file", file: "wiki/missing.md", x: 200, y: 200, width: 200, height: 60 },
+        { id: "f4", type: "file", file: "wiki/graph/schema.md", x: 450, y: 100, width: 100, height: 60 },
+        { id: "f5", type: "file", file: "wiki/bases/products-and-dead.base", x: 450, y: 200, width: 100, height: 60 },
+        { id: "l", type: "link", url: "https://example.com/日本語", x: 900, y: 0, width: 100, height: 50 },
+        node("multi", { text: "\n\n  最初の行  \nsecond\nthird", x: 900, y: 100 }),
+        node("long", { text: "x".repeat(200), x: 900, y: 200 }),
+        node("japanese", { text: "日本語のテキスト".repeat(20), x: 900, y: 300 }),
+      ],
+      edges: [
+        { id: "e1", fromNode: "a", toNode: "f", fromSide: "right", toSide: "left" },
+        { id: "e2", fromNode: "f", toNode: "l", label: "depends_on", toEnd: "none" },
+        { id: "e3", fromNode: "l", toNode: "a", fromEnd: "arrow", color: "#FF0000" },
+        { id: "e4", fromNode: "l", toNode: "multi", fromEnd: "arrow", toEnd: "none", label: "" },
+        { id: "e5", fromNode: "f2", toNode: "f3", label: "x".repeat(200) },
+        { id: "e6", fromNode: "a", toNode: "a", label: "self" },
+        { id: "e7", fromNode: "g", toNode: "a" },
+      ],
+      metadata: { version: "1.0", extra: { deep: [1, [2, [3]]] } },
+    })
+  );
+  read("full");
+  show("full");
+  read("empty");
+  read("empty2");
+  // Obsidian's own layout: tabs, one object per line, key order of its choosing.
+  canvas(
+    "obsidian",
+    '{\n\t"nodes":[\n\t\t{"id":"b9d1","type":"text","text":"# Title\\nbody","x":-240,"y":-120,"width":250,"height":60},\n\t\t{"x":40,"y":-120,"width":250,"height":60,"type":"file","id":"a1","file":"wiki/hello.md"}\n\t],\n\t"edges":[\n\t\t{"id":"e","fromNode":"b9d1","fromSide":"right","toNode":"a1","toSide":"left","label":"→"}\n\t]\n}'
+  );
+  read("obsidian");
+  show("obsidian");
+  // The same node and edge order, written back unchanged.
+  add("canvas_write", { path: "wiki/graph/canvases/obsidian.canvas", content: '{"edges":[],"nodes":[]}' });
+  show("obsidian");
+  // Floats that are whole numbers are integers.
+  canvas("floaty", '{"nodes":[{"id":"a","type":"text","text":"t","x":1.0,"y":2.0,"width":3.0,"height":4.0}]}');
+  read("floaty");
+  canvas("frac", '{"nodes":[{"id":"a","type":"text","text":"t","x":1.5,"y":2,"width":3,"height":4}]}');
+  canvas("exp", '{"nodes":[{"id":"a","type":"text","text":"t","x":1e3,"y":2,"width":3E1,"height":4}]}');
+  read("exp");
+
+  // -- canvas_write: every error in the spec, with its position
+  const bad = (name: string, value: unknown) => canvas(`bad-${name}`, typeof value === "string" ? value : json(value));
+  bad("notjson", "{");
+  bad("empty-text", "");
+  bad("array", "[]");
+  bad("null", "null");
+  bad("number", "5");
+  bad("string", '"x"');
+  bad("nodes-obj", { nodes: {} });
+  bad("nodes-null", { nodes: null });
+  bad("edges-str", { edges: "x" });
+  bad("node-num", { nodes: [5] });
+  bad("node-null", { nodes: [null] });
+  bad("node-arr", { nodes: [[]] });
+  bad("noid", { nodes: [{ type: "text", text: "t", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("id-num", { nodes: [node("a", { id: 5 })] });
+  bad("id-empty", { nodes: [node("")] });
+  bad("id-long", { nodes: [node("x".repeat(129))] });
+  bad("id-ok-long", { nodes: [node("x".repeat(128))] });
+  bad("id-jp-long", { nodes: [node("あ".repeat(128))] });
+  bad("id-jp-toolong", { nodes: [node("あ".repeat(129))] });
+  bad("id-dup", { nodes: [node("a"), node("a")] });
+  bad("id-dup-long", { nodes: [node("a".repeat(100)), node("a".repeat(100))] });
+  bad("type", { nodes: [node("a", { type: "image" })] });
+  bad("type-missing", { nodes: [{ id: "a", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("type-num", { nodes: [node("a", { type: 5 })] });
+  bad("x-float", { nodes: [node("a", { x: 1.5 })] });
+  bad("x-str", { nodes: [node("a", { x: "1" })] });
+  bad("x-big", { nodes: [node("a", { x: 10_000_001 })] });
+  bad("x-edge", { nodes: [node("a", { x: 10_000_000, y: -10_000_000 })] });
+  bad("w-zero", { nodes: [node("a", { width: 0 })] });
+  bad("w-neg", { nodes: [node("a", { width: -5 })] });
+  bad("h-big", { nodes: [node("a", { height: 10_000_001 })] });
+  bad("w-null", { nodes: [node("a", { width: null })] });
+  bad("color-7", { nodes: [node("a", { color: "7" })] });
+  bad("color-num", { nodes: [node("a", { color: 1 })] });
+  bad("color-null", { nodes: [node("a", { color: null })] });
+  bad("color-hex2", { nodes: [node("a", { color: "#12" })] });
+  bad("color-hex5", { nodes: [node("a", { color: "#12345" })] });
+  bad("color-hexbad", { nodes: [node("a", { color: "#GGGGGG" })] });
+  bad("color-ok", { nodes: [node("a", { color: "#1234" }), node("b", { color: "#12345678" }), node("c", { color: "6" })] });
+  bad("text-num", { nodes: [node("a", { text: 5 })] });
+  bad("text-missing", { nodes: [{ id: "a", type: "text", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("file-missing", { nodes: [{ id: "a", type: "file", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("file-empty", { nodes: [{ id: "a", type: "file", file: "", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("file-nul", { nodes: [{ id: "a", type: "file", file: "a\u0000b", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("subpath", { nodes: [{ id: "a", type: "file", file: "x.md", subpath: "h", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("subpath-num", { nodes: [{ id: "a", type: "file", file: "x.md", subpath: 5, x: 0, y: 0, width: 1, height: 1 }] });
+  bad("url-missing", { nodes: [{ id: "a", type: "link", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("url-empty", { nodes: [{ id: "a", type: "link", url: "", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("label-num", { nodes: [{ id: "a", type: "group", label: 5, x: 0, y: 0, width: 1, height: 1 }] });
+  bad("bg-num", { nodes: [{ id: "a", type: "group", background: 5, x: 0, y: 0, width: 1, height: 1 }] });
+  bad("bgstyle", { nodes: [{ id: "a", type: "group", backgroundStyle: "tile", x: 0, y: 0, width: 1, height: 1 }] });
+  bad("bgstyle-ok", { nodes: [{ id: "a", type: "group", backgroundStyle: "repeat", x: 0, y: 0, width: 1, height: 1 }] });
+  const two = [node("a"), node("b")];
+  bad("edge-num", { nodes: two, edges: [5] });
+  bad("edge-noid", { nodes: two, edges: [{ fromNode: "a", toNode: "b" }] });
+  bad("edge-dup", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b" }, { id: "e", fromNode: "b", toNode: "a" }] });
+  bad("edge-from-missing", { nodes: two, edges: [{ id: "e", toNode: "b" }] });
+  bad("edge-from-num", { nodes: two, edges: [{ id: "e", fromNode: 1, toNode: "b" }] });
+  bad("edge-to-unknown", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "zz" }] });
+  bad("edge-to-unknown-long", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "z".repeat(200) }] });
+  bad("edge-side", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", fromSide: "middle" }] });
+  bad("edge-side-null", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", toSide: null }] });
+  bad("edge-end", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", toEnd: "dot" }] });
+  bad("edge-color", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", color: "9" }] });
+  bad("edge-label", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", label: 5 }] });
+  bad("edge-ok-all", { nodes: two, edges: [{ id: "e", fromNode: "a", toNode: "b", fromSide: "top", toSide: "bottom", fromEnd: "arrow", toEnd: "none", color: "#00FF00", label: "l" }] });
+  // Many errors: the first ten, then a count.
+  bad("many", { nodes: Array.from({ length: 12 }, (_, i) => node(`n${i}`, { type: "nope" })) });
+  bad("many-mixed", { nodes: [node("a", { x: 1.5, y: "s", width: 0, height: -1, color: "x", type: "text", text: 1 })], edges: [5, {}] });
+  add("canvas_list");
+
+  // -- canvas_write: path rules
+  for (const path of [
+    "wiki/x.canvas",
+    "wiki/sub/dir/x.canvas",
+    "wiki/sub/../ok-normalised.canvas",
+    "wiki/graph/canvases/日本語.canvas",
+    "wiki/X.CANVAS",
+    "wiki/.hidden/x.canvas",
+    "wiki/graph/.x.canvas",
+    "wiki/graph/.okf/x.canvas",
+    "wiki/graph/./.okf/x.canvas",
+    "wiki/graph/sub/../../.git/x.canvas",
+    "wiki/../x.canvas",
+    "wiki/../.okf/x.canvas",
+    ".okf/x.canvas",
+    ".rag/x.canvas",
+    "raw/x.canvas",
+    "x.canvas",
+    "../x.canvas",
+    "wiki/x.canvas.txt",
+    "wiki/x.md",
+    "wiki/x",
+    "",
+  ]) {
+    add("canvas_write", { path, content: "{}" });
+  }
+  add("canvas_write", { path: 5, content: "{}" });
+  add("canvas_write", { path: "wiki/y.canvas", content: 5 });
+  add("canvas_write", { path: "wiki/y.canvas", content: null });
+  add("canvas_write", { path: "wiki/y.canvas", content: "{}", actor: "  " });
+  add("canvas_write", { path: "wiki/y.canvas", content: "{}", actor: 5 });
+  add("canvas_write");
+  add("canvas_list", { ignored: true });
+
+  // -- canvas_read: errors
+  add("canvas_read");
+  add("canvas_read", { path: "" });
+  add("canvas_read", { path: 5 });
+  add("canvas_read", { path: "wiki/nope.canvas" });
+  add("canvas_read", { path: "wiki/hello.md" });
+  add("canvas_read", { path: "../x.canvas" });
+  add("canvas_read", { path: "raw/README.canvas" });
+  add("canvas_read", { path: "wiki/x.CANVAS" });
+  add("canvas_read", { path: "wiki/graph" });
+  add("write_file", { path: "wiki/raw-bad.canvas", content: '{"nodes":[{"id":"a"}]}' });
+  add("canvas_read", { path: "wiki/raw-bad.canvas" });
+  add("write_file", { path: "wiki/raw-json.canvas", content: "nope" });
+  add("canvas_read", { path: "wiki/raw-json.canvas" });
+  add("canvas_list");
+  add("check_conformance");
+
+  // -- hostile canvases answer with errors, quickly, the same in both servers
+  const nodes2001 = Array.from({ length: 2001 }, (_, i) => node(`n${i}`));
+  canvas("lim-nodes", json({ nodes: nodes2001 }));
+  canvas("lim-nodes-ok", json({ nodes: nodes2001.slice(0, 2000) }));
+  read("lim-nodes-ok");
+  canvas("lim-edges", json({ nodes: [node("a")], edges: Array.from({ length: 5001 }, (_, i) => ({ id: `e${i}`, fromNode: "a", toNode: "a" })) }));
+  canvas("lim-deep", "[".repeat(100_000));
+  canvas("lim-deep2", `{"nodes":[],"x":${"[".repeat(40)}${"]".repeat(40)}}`);
+  canvas("lim-deep-ok", `{"nodes":[],"x":${"[".repeat(28)}${"]".repeat(28)}}`);
+  canvas("lim-deep-strings", json({ nodes: [node("a", { text: "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[" })] }));
+  canvas("lim-brackets-in-key", json({ nodes: [], "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[": 1 }));
+  canvas("lim-bytes", json({ nodes: [node("a", { text: "x".repeat(1_048_576) })] }));
+  canvas("lim-bytes-ok", json({ nodes: [node("a", { text: "あ".repeat(300_000) })] }));
+  canvas("lim-bytes-jp", json({ nodes: [node("a", { text: "あ".repeat(400_000) })] }));
+  add("canvas_list");
+  // A file that is too big on disk is refused without being read.
+  add("write_file", { path: "wiki/huge-on-disk.canvas", content: json({ nodes: [node("a", { text: "x".repeat(1_100_000) })] }) });
+  add("canvas_read", { path: "wiki/huge-on-disk.canvas" });
+  add("canvas_list");
+  // Groups that contain each other, or are identical, or nest deeply: an outline, not a hang.
+  const same = (id: string, extra: Record<string, unknown> = {}) => ({ id, type: "group", label: id, x: 0, y: 0, width: 500, height: 500, ...extra });
+  canvas("cyc-identical", json({ nodes: [same("g1"), same("g2"), same("g3"), node("t", { x: 10, y: 10 })], edges: [{ id: "e", fromNode: "g1", toNode: "g2" }, { id: "e2", fromNode: "g3", toNode: "g1" }] }));
+  read("cyc-identical");
+  canvas("cyc-nested", json({ nodes: Array.from({ length: 40 }, (_, i) => ({ id: `n${i}`, type: "group", x: i, y: i, width: 1000 - 2 * i, height: 1000 - 2 * i })).concat([node("leaf", { x: 40, y: 40 }) as never]) }));
+  read("cyc-nested");
+  canvas("cyc-many", json({ nodes: [...Array.from({ length: 600 }, (_, i) => ({ id: `g${i}`, type: "group", x: 0, y: 0, width: 900, height: 900 })), ...Array.from({ length: 600 }, (_, i) => node(`n${i}`, { x: 1, y: 1 }))] }));
+  read("cyc-many");
+  canvas("cyc-self-edge", json({ nodes: [same("g")], edges: [{ id: "e", fromNode: "g", toNode: "g", label: "loop" }] }));
+  read("cyc-self-edge");
+  canvas("cyc-partial", json({ nodes: [same("big", { width: 400, height: 400 }), same("mid", { x: 10, y: 10, width: 300, height: 300 }), same("part", { x: 350, y: 350, width: 100, height: 100 }), node("in", { x: 20, y: 20 }), node("edge", { x: 399, y: 399 }), node("out", { x: 600, y: 0 })] }));
+  read("cyc-partial");
+  canvas("ids-mixed", json({ nodes: [node("日本語-id", { x: 0 }), node("with space", { x: 200 }), node("quote\"d", { x: 400 })], edges: [{ id: "新しい", fromNode: "日本語-id", toNode: "with space", label: "→" }] }));
+  read("ids-mixed");
+
+  // -- typed relations and the schema
+  add("graph_schema");
+  add("check_conformance");
+  const schema = (frontmatter: string) =>
+    add("write_file", { path: "wiki/graph/schema.md", content: note(frontmatter, "# schema") });
+  schema("type: GraphSchema\ntypes:\n  - name: Concept\n  - name: Project\n  - name: Area\n  - Note\n  - name: GraphSchema\nkinds:\n  - name: depends_on\n    from: [Project, Area]\n    to: Concept\n    description:  Needs first \n  - name: part_of\n    to: [Project]\n  - name: derived_from\n  - related_to");
+  add("graph_schema");
+  add("check_conformance");
+  schema("type: GraphSchema\ntypes: [Concept]\nkinds:\n  - name: depends_on\n    from: Project\n  - name: part_of\n    from: [Area, Project]\n    to: [Project, Area]\n  - name: supersedes\n    to: Concept\n  - name: derived_from\n  - name: related_to");
+  add("check_conformance");
+  // Bad shapes in the schema are problems, not crashes; absent lists are not checked.
+  schema("type: GraphSchema\ntypes: nope\nkinds: [5, {description: x}, {name: ''}, {name: ok, from: 5, to: [1, ' ', b]}]");
+  add("graph_schema");
+  add("check_conformance");
+  schema("type: GraphSchema\nkinds: [{name: ok}]");
+  add("graph_schema");
+  add("check_conformance");
+  schema("type: GraphSchema\ntypes: [Concept, Project, Area, GraphSchema]");
+  add("graph_schema");
+  add("check_conformance");
+  schema("type: Note\ntypes: []\nkinds: []");
+  add("graph_schema");
+  add("check_conformance");
+  schema("type: GraphSchema\ntypes: [Concept]\nkinds:\n" + Array.from({ length: 205 }, (_, i) => `  - k${i}`).join("\n"));
+  add("graph_schema");
+  schema("type: GraphSchema\ntypes: [Concept]\nkinds:\n  - name: wide\n    from: [" + Array.from({ length: 60 }, (_, i) => `T${i}`).join(", ") + "]");
+  add("graph_schema");
+  add("write_file", { path: "wiki/graph/schema.md", content: "---\ntype: [unclosed\n---\nx" });
+  add("graph_schema");
+  add("check_conformance");
+  add("write_file", { path: "wiki/graph/schema.md", content: "no frontmatter" });
+  add("graph_schema");
+  // Relation shapes on a concept, with a schema that declares kinds.
+  schema("type: GraphSchema\ntypes: [Concept, Project, Area, Note]\nkinds: [depends_on, part_of]");
+  concept("r/shapes", "title: Shapes\nrelations:\n  depends_on: [g/ベータ, ' g/ガンマ#sec ', '[[g/アルファ|alias]]', '', 5, null]\n  part_of: g/デルタ\n  bad1: 5\n  bad2: {a: 1}\n  ' ': [x]", "x");
+  concept("r/nomap", "relations: [a, b]", "x");
+  concept("r/null", "relations:", "x");
+  concept("r/emptylist", "relations:\n  depends_on: []", "x");
+  concept("r/dupes", "relations:\n  depends_on: [g/ベータ, g/ベータ, './../g/ベータ.md']", "x");
+  concept("r/many", "relations:\n  related_to: [" + Array.from({ length: 520 }, (_, i) => `n${i}`).join(", ") + "]", "x");
+  add("rebuild_rag");
+  add("check_conformance");
+  add("read_file", { path: "wiki/r/shapes.md" });
+  add("read_file", { path: "wiki/r/dupes.md" });
+  add("unresolved_links");
+  add("backlinks", { id: "g/ベータ" });
+  draw("shapes.canvas", { root: "r/shapes", depth: 1, include_dead: true });
+  draw("many.canvas", { root: "r/many", depth: 1 });
+  // A move follows the relation too: the entry is edited in place and keeps pointing at the file.
+  add("move_file", { from: "wiki/g/ベータ.md", to: "wiki/g/ベータ2.md" });
+  add("unresolved_links");
+  add("read_file", { path: "wiki/g/アルファ.md" });
+  add("move_file", { from: "wiki/g/ベータ2.md", to: "wiki/g/ベータ.md" });
+  // A concept with relations written through every path: create_concept, set_para, delete.
+  add("set_para", { path: "wiki/r/shapes.md", para: "project" });
+  add("backlinks", { id: "1-projects/r/shapes" });
+  add("delete_file", { path: "wiki/1-projects/r/shapes.md" });
+  add("unresolved_links");
+  // No schema: nothing new to see.
+  add("delete_file", { path: "wiki/graph/schema.md" });
+  add("check_conformance");
+  add("graph_schema");
+  add("graph_schema", { path: "ignored" });
+
+  // -- SYSTEMMAP.md
+  add("system_map");
+  add("system_map", { refresh: false });
+  add("system_map", { refresh: "yes" });
+  add("system_map", { refresh: 1 });
+  add("system_map", { refresh: true, actor: "process:parity" });
+  add("read_file", { path: "SYSTEMMAP.md" });
+  add("system_map", { refresh: true, actor: "process:parity" });
+  add("system_map");
+  add("audit_changes", { actor: "process:parity" });
+  // Human text around the markers survives, whatever it contains.
+  const START = "<!-- okf:systemmap:start -->";
+  const END = "<!-- okf:systemmap:end -->";
+  const human = (head: string, tail: string) =>
+    add("write_file", { path: "SYSTEMMAP.md", content: `${head}\n${START}\nstale generated text\n${END}\n${tail}` });
+  human("# 私のシステム\r\n\r\n自分のメモ  \t\r\n", "\r\n## 末尾\r\n- a\r\n\ttab  \r\n");
+  add("system_map", { refresh: true });
+  add("read_file", { path: "SYSTEMMAP.md" });
+  add("system_map", { refresh: true });
+  human("", "");
+  add("system_map", { refresh: true });
+  human("only head", "");
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: "no markers at all" });
+  add("system_map", { refresh: true });
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: "no markers, ends with newline\n" });
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: `${END}\nbefore\n${START}\nafter\n` });
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: `${START}\n${START}\n${END}\n${END}\n` });
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: `${START}${END}` });
+  add("system_map", { refresh: true });
+  add("write_file", { path: "SYSTEMMAP.md", content: "" });
+  add("system_map", { refresh: true });
+  add("delete_file", { path: "SYSTEMMAP.md" });
+  add("system_map");
+  add("system_map", { refresh: true, actor: "  " });
+  add("read_file", { path: "SYSTEMMAP.md" });
+  add("system_map", { refresh: true, actor: 5 });
+  add("list_concepts");
+  add("check_conformance");
+  add("read_map");
+  add("search", { query: "SYSTEMMAP" });
+  // The facts follow the bundle: a new type, a DEAD concept, a base, a skill, a loop, know-how.
+  add("write_file", { path: "wiki/sm/typed.md", content: note("type: Widget\ntitle: Typed", "x") });
+  add("write_file", { path: "wiki/sm/widget.md", content: note("type: Widget|Pipe\ntitle: Pipe type\ntags: [DEAD]", "x") });
+  add("base_write", { path: "wiki/bases/sm.base", content: "views: [{type: table, name: V}]\n" });
+  add("loop_define", { goal: "Keep the system map fresh", name: "sm-refresh" });
+  add("knowhow_add", { title: "Refresh the map", body: "After adding a type, refresh.", actor: "process:parity" });
+  add("system_map", { refresh: true });
+  add("canvas_write", { path: "wiki/graph/canvases/sm.canvas", content: "{}" });
+  add("system_map", { refresh: true });
+
+  // -- review fixes: refused marker mixes leave the file alone, and say what to restore
+  const refuse = (content: string) => {
+    add("write_file", { path: "SYSTEMMAP.md", content });
+    add("system_map", { refresh: true });
+    add("read_file", { path: "SYSTEMMAP.md" });
+  };
+  refuse(`mine\n${START}\nno end\n`);
+  refuse(`mine\n${END}\nno start\n`);
+  refuse(`${START}\n${START}\n${END}\n`);
+  refuse(`${START}\n${END}\n${END}\n`);
+  refuse(`${END}\nx\n${START}\n`);
+  // Only "not found" means absent: a directory at the path is a read error, and nothing is written.
+  add("delete_file", { path: "SYSTEMMAP.md" });
+  add("create_directory", { path: "SYSTEMMAP.md" });
+  add("system_map");
+  add("system_map", { refresh: true });
+  add("list_files", { path: ".", recursive: false });
+  add("delete_file", { path: "SYSTEMMAP.md" });
+  add("system_map", { refresh: true });
+  // Generated text cannot spell a marker: two refreshes give the same file.
+  add("write_file", { path: "wiki/sm/evil.md", content: note(`type: "Evil ${END} ${START}"\ntitle: evil`, "x") });
+  add("loop_define", { goal: `goal ${END} and ${START}`, name: "sm-evil" });
+  add("system_map", { refresh: true });
+  add("read_file", { path: "SYSTEMMAP.md" });
+  add("system_map", { refresh: true });
+
+  // -- review fixes: canvas_from_links does not replace a canvas unless told to
+  add("canvas_from_links", { path: "once.canvas", root: "g/アルファ", depth: 1 });
+  add("canvas_from_links", { path: "once.canvas", root: "g/アルファ", depth: 2 });
+  add("canvas_from_links", { path: "once.canvas", root: "g/アルファ", depth: 2, overwrite: "yes" });
+  add("canvas_from_links", { path: "once.canvas", root: "g/アルファ", depth: 2, overwrite: true });
+  show("once");
+  add("canvas_from_links", { path: "wiki/graph/canvases/once.canvas", root: "g/アルファ", depth: 0 });
+
+  // -- review fixes: more typed edges than a canvas holds are cut at the limit
+  const dense = Array.from({ length: 40 }, (_, i) => `d${String(i).padStart(2, "0")}`);
+  for (const id of dense) {
+    const kinds = ["k1", "k2", "k3", "k4"]
+      .map((k) => `  ${k}: [${dense.filter((o) => o !== id).map((o) => `dense/${o}`).join(", ")}]`)
+      .join("\n");
+    add("write_file", { path: `wiki/dense/${id}.md`, content: note(`type: Concept\nrelations:\n${kinds}`, "x") });
+  }
+  add("rebuild_rag");
+  add("canvas_from_links", { path: "dense.canvas", root: "dense/d00", depth: 1, actor: "process:parity" });
+  add("canvas_list");
+
+  // -- review fixes: a move follows typed relations (every form), and reports the ones it cannot edit
+  const rel = (path: string, relations: string) =>
+    add("write_file", { path: `wiki/${path}.md`, content: `---\ntype: Concept\n# kept comment\ntitle:   spaced\nrelations:\n${relations}\n---\n\nbody\n` });
+  concept("mv/target", "title: Target", "t");
+  concept("mv/sibling", "title: Sibling", "s");
+  rel("mv/a", "  depends_on: [mv/target, \"[[target]]\", other/x]   # tail\n  odd: 5");
+  rel("mv/b", "  part_of:\n    - wiki/mv/target.md#sec\n    # between\n    - 'unrelated/y'");
+  rel("mv/c", "  see_also: mv/target # note");
+  rel("mv/d", "  see_also: '[[target|T]]'");
+  rel("mv/e", "  see_also: ./target.md");
+  rel("mv/f", "  see_also: /mv/target.md");
+  rel("mv/multi", "  depends_on: [\n    mv/target,\n    other/x\n  ]");
+  rel("mv/anchor", "  depends_on: &d [mv/target]");
+  rel("mv/quoted", "  \"depends_on\": [\"mv/target\"]");
+  add("rebuild_rag");
+  add("move_file", { from: "wiki/mv/target.md", to: "wiki/mv2/moved.md" });
+  for (const n of ["a", "b", "c", "d", "e", "f", "multi", "anchor", "quoted"]) add("read_file", { path: `wiki/mv/${n}.md` });
+  add("backlinks", { id: "mv2/moved" });
+  add("unresolved_links");
+  // The moved file's own relative relations are rebased; set_para refiles the same way.
+  rel("mv/mover", "  related_to: [./sibling.md, \"[[sibling]]\", mv/sibling, ../mv/sibling.md]\n  self: ./mover.md");
+  rel("mv/refers", "  part_of: mv/mover");
+  add("rebuild_rag");
+  add("set_para", { path: "wiki/mv/mover.md", para: "area" });
+  add("read_file", { path: "wiki/2-areas/mv/mover.md" });
+  add("read_file", { path: "wiki/mv/refers.md" });
+  add("move_file", { from: "wiki/2-areas/mv/mover.md", to: "wiki/mv/deeper/er/mover.md" });
+  add("read_file", { path: "wiki/mv/deeper/er/mover.md" });
+  add("read_file", { path: "wiki/mv/refers.md" });
+  add("unresolved_links");
+  add("audit_changes", { actor: "process:parity" });
+
+  // -- a canvas is a file like any other: it can be moved, deleted, read; an outside edit is seen
+  add("move_file", { from: "wiki/graph/canvases/full.canvas", to: "wiki/graph/canvases/sub/full2.canvas" });
+  add("canvas_list");
+  add("delete_file", { path: "wiki/graph/canvases/sub/full2.canvas" });
+  add("canvas_list");
+  add("rebuild_rag");
+  add("search", { query: "nodes" });
+  add("audit_changes", { actor: "process:parity" });
+  add("list_concepts");
+  add("check_conformance");
+  add("unresolved_links");
+  return out;
+}
+
 /** Replace `<BUNDLE>` in string arguments with this server's bundle path. */
 function withBundle<T>(value: T, bundle: string): T {
   return JSON.parse(JSON.stringify(value).split("<BUNDLE>").join(JSON.stringify(bundle).slice(1, -1)));
@@ -1428,6 +1982,7 @@ describe.skipIf(!ready)("Rust headless server parity", () => {
       ["SCRIPT_MORE", SCRIPT_MORE, 8],
       ["newFeatureScript", newFeatureScript(), 0],
       ["basesScript", basesScript(), 0],
+      ["canvasScript", canvasScript(), 0],
     ];
     const noBundle = new Map<string, number>();
     for (const [segment, script] of segments) {

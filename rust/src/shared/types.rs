@@ -269,9 +269,11 @@ impl ConceptFrontmatter {
 pub enum LinkKind {
     Wikilink,
     Markdown,
+    /// A typed relation from the frontmatter `relations`.
+    Relation,
 }
 
-/// A link found in a concept body.
+/// A link found in a concept body, or a typed relation from its frontmatter.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConceptLink {
     /// Raw target as written in the source.
@@ -280,6 +282,9 @@ pub struct ConceptLink {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub kind: LinkKind,
+    /// The relation kind, for a link declared in the frontmatter `relations`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
     /// Resolved concept id, or `null` when the target is external/unresolvable.
     pub resolved: Option<String>,
 }
@@ -551,6 +556,7 @@ mod tests {
             target: "a".into(),
             label: None,
             kind: LinkKind::Wikilink,
+            relation: None,
             resolved: None,
         };
         assert_eq!(

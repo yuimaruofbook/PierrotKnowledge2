@@ -321,6 +321,7 @@ pub fn extract_links(
             target: target.to_string(),
             label: (!label.is_empty()).then(|| label.to_string()),
             kind: LinkKind::Wikilink,
+            relation: None,
             resolved: resolve_link_target(target, from_id, known_ids),
         });
     }
@@ -340,6 +341,7 @@ pub fn extract_links(
             target: target.to_string(),
             label: (!label.is_empty()).then(|| label.to_string()),
             kind: LinkKind::Markdown,
+            relation: None,
             resolved: resolve_link_target(target, from_id, known_ids),
         });
     }
@@ -595,6 +597,7 @@ mod tests {
             target: target.into(),
             label: None,
             kind,
+            relation: None,
             resolved: Some(resolved.into()),
         }
     }

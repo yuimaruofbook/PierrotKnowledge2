@@ -16,11 +16,11 @@ export type ViewMode = "edit" | "preview";
 /**
  * Extensions the preview pane can render.
  *
- * Three renderers sit behind this — Markdown, HTML and a `.base` view — but the
+ * Four renderers sit behind this — Markdown, HTML, a `.base` view and a `.canvas` diagram — but the
  * rule is the same for all: a file with a rendered form opens in it. Which renderer runs is the
  * editor's business (`isHtmlPath`), not this decision's.
  */
-const RENDERABLE = /\.(md|markdown|x?html|htm|base)$/i;
+const RENDERABLE = /\.(md|markdown|x?html|htm|base|canvas)$/i;
 
 export function initialViewMode(path: string, binary?: boolean): ViewMode {
   // Nothing to render either way: a binary file has no text at all, and a

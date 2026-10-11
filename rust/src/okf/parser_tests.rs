@@ -78,6 +78,7 @@ fn parse_concept_trims_leading_newlines_and_resolves_links() {
         raw: "---\ntype: Note\n---\n\n\nsee [[b]]\n".into(),
         mtime_ms: None,
         known_ids: None,
+        wiki_dir: "",
     });
     assert_eq!(doc.id, "wiki/a");
     assert_eq!(doc.body, "see [[b]]\n");

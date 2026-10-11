@@ -12,6 +12,7 @@ import { activeFormats, applyFormat, type FormatAction } from "../../shared/mark
 import { splitFrontmatter } from "../../shared/okf/frontmatter";
 import { isHtmlPath } from "../../shared/html";
 import { isBasePath } from "../../shared/okf/base";
+import { isCanvasPath } from "../../shared/okf/canvas";
 import { clear, debounce, el } from "../dom";
 import { renderHtml, renderMarkdown } from "../markdown";
 import { decidePasteContent, readClipboard } from "../paste";
@@ -50,6 +51,8 @@ export interface EditorOptions {
   binaryNotice: HTMLElement;
   /** Draws a `.base` file's view into the preview pane. */
   renderBase: (target: HTMLElement, path: string) => void;
+  /** Draws a `.canvas` file, from its text, into the preview pane. */
+  renderCanvas: (target: HTMLElement, path: string, text: string) => void;
   onDirtyChange: (dirty: boolean) => void;
   onAutosave: () => void;
   onFollowLink: (target: string, kind: "wikilink" | "internal") => void;
@@ -448,9 +451,27 @@ export class Editor {
     if (this.mode === "preview") this.renderPreview();
   }
 
-  markSaved(mtimeMs: number): void {
+  /**
+   * Replace the whole buffer from a view that edits the file as a model (the
+   * canvas): the text changes and the file is dirty, exactly as if it had been
+   * typed, so it is saved and autosaved by the same path.
+   */
+  replaceValue(text: string): void {
+    this.options.textarea.value = text;
+    this.setDirty(true);
+    this.scheduleAutosave();
+  }
+
+  /**
+   * The file was written with `written`. If the buffer has moved on since the
+   * write started (typing during the round trip), it stays dirty so the newer
+   * text is saved too; returns whether the buffer is clean.
+   */
+  markSaved(mtimeMs: number, written?: string): boolean {
     if (this.current) this.current = { ...this.current, mtimeMs };
+    if (written !== undefined && this.options.textarea.value !== written) return false;
     this.setDirty(false);
+    return true;
   }
 
   clearDocument(): void {
@@ -534,12 +555,19 @@ export class Editor {
     // A base is drawn from what is on disk, not from the buffer: the view is
     // computed on the Bun side, and `main.ts` saves before switching here.
     if (isBasePath(path)) {
+      this.options.preview.classList.remove("canvas-root");
       this.options.renderBase(this.options.preview, path);
       return;
     }
 
+    // A canvas is drawn from the buffer: it is edited there, and saved from there.
+    if (isCanvasPath(path)) {
+      this.options.renderCanvas(this.options.preview, path, this.options.textarea.value);
+      return;
+    }
+
     clear(this.options.preview);
-    this.options.preview.classList.remove("base-root");
+    this.options.preview.classList.remove("base-root", "canvas-root");
     const source = this.options.textarea.value;
 
     if (isHtmlPath(this.current?.path ?? "")) {
@@ -556,8 +584,8 @@ export class Editor {
 
     const concept = result.concept;
     if (!concept) {
-      const base = isBasePath(this.current?.path ?? "");
-      bar.appendChild(el("span", { className: base ? "badge type" : "badge reserved", text: base ? "Base" : messages.nonConceptFile }));
+      const kind = isBasePath(this.current?.path ?? "") ? "Base" : isCanvasPath(this.current?.path ?? "") ? "Canvas" : null;
+      bar.appendChild(el("span", { className: kind ? "badge type" : "badge reserved", text: kind ?? messages.nonConceptFile }));
       return;
     }
 

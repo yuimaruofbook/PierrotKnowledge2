@@ -39,11 +39,12 @@ describe("three layers, not five", () => {
     const entries = (await readdir(root)).sort();
 
     // The directories at the root are the layers and nothing else — that is
-    // the invariant. The three loose files beside them are deliberately not
+    // the invariant. The loose files beside them are deliberately not
     // layers: they are not the material the layers stage.
     expect(entries.filter((e) => !e.endsWith(".md"))).toEqual([".rag", "raw", "wiki"]);
     expect(entries.filter((e) => e.endsWith(".md")).sort()).toEqual([
       "MAP.md",
+      "SYSTEMMAP.md",
       "Task.md",
       "human.md",
     ]);

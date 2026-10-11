@@ -22,6 +22,7 @@ import { SkillsPanel } from "./ui/skills";
 import { CommandPalette, type PaletteItem } from "./ui/palette";
 import { SearchPanel } from "./ui/search";
 import { BaseView } from "./ui/base-view";
+import { CanvasView } from "./ui/canvas-view";
 import { isBasePath } from "../shared/okf/base";
 import { FileTree } from "./ui/tree";
 
@@ -149,6 +150,32 @@ const baseView = new BaseView({
   },
 });
 
+/**
+ * Canvases are drawn and edited in the view; every change goes back into the
+ * editor's buffer, so the file is saved (and autosaved) like any other.
+ * File nodes show the title of the concept they point at, from the concept list.
+ */
+const canvasView = new CanvasView({
+  resolveFile: (file) => {
+    const prefix = bundle?.wikiDir ? `${bundle.wikiDir}/` : "";
+    const found = concepts.find((c) => c.path === file || (prefix !== "" && `${prefix}${file}` === c.path));
+    return found ? { title: found.title } : null;
+  },
+  onChange: (_path, text) => editor.replaceValue(text),
+  openConcept: (file) => {
+    const prefix = bundle?.wikiDir ? `${bundle.wikiDir}/` : "";
+    const found = concepts.find((c) => c.path === file || `${prefix}${file}` === c.path);
+    void openFile(found ? found.path : file);
+  },
+  openUrl: (url) => void rpc.request.openExternal({ url }).catch(reportError),
+  pickConcept: () => pickConceptPath("ファイルノードにする概念を選ぶ"),
+  editSource: () => {
+    editor.setMode("edit");
+    showActiveMode("edit");
+  },
+  makeDiagram: () => void makeRelationDiagram(),
+});
+
 const editor = new Editor({
   textarea: ui.textarea,
   preview: ui.preview,
@@ -159,6 +186,7 @@ const editor = new Editor({
   autocomplete: ui.autocomplete,
   binaryNotice: ui.binaryNotice,
   renderBase: (target, path) => void baseView.show(target, path),
+  renderCanvas: (target, path, text) => canvasView.show(target, path, text),
   onDirtyChange: (dirty) => {
     ui.save.disabled = !dirty;
     ui.pathLabel.classList.toggle("dirty", dirty);
@@ -436,7 +464,9 @@ async function save(options: { silent?: boolean } = {}): Promise<void> {
   const content = editor.value;
   try {
     const result = await rpc.request.writeFile({ path, content });
-    editor.markSaved(result.mtimeMs);
+    // Only clean if nothing was typed while the write was in flight; otherwise
+    // the newer text is still unsaved and goes out in another round.
+    const settled = editor.path !== path || editor.markSaved(result.mtimeMs, content);
 
     if (result.warnings.length) {
       setStatus(`${path} — OKF警告: ${result.warnings.join("; ")}`, "error");
@@ -444,6 +474,7 @@ async function save(options: { silent?: boolean } = {}): Promise<void> {
       setStatus(`保存: ${path}`);
     }
     await refreshConcepts();
+    if (!settled) void save(options);
   } catch (error) {
     reportError(error);
   }
@@ -531,6 +562,11 @@ function openNodeMenu(node: FileNode, at: { x: number; y: number }): void {
   // agent cannot decide that unreviewed material belongs in the canon.
   if (node.layer === "raw" && node.type === "file") {
     entries.push({ label: "wiki/ に引き上げる…", run: () => void promoteNode(node) });
+  }
+
+  // A diagram of what a concept links to: only a concept has links to follow.
+  if (node.type === "file" && concepts.some((c) => c.path === node.path)) {
+    entries.push({ label: "関係図を作る…", run: () => void makeRelationDiagram(node.path) });
   }
 
   if (!readOnly) {
@@ -635,11 +671,13 @@ async function movePath(from: string, to: string): Promise<void> {
     if (editor.path === from) await openFile(result.moved);
     else tree.select(editor.path);
 
-    setStatus(
-      result.linkCount
-        ? `移動: ${result.moved} — ${result.updated.length} ファイルの ${result.linkCount} リンクを更新`
-        : `移動: ${result.moved}`
-    );
+    const moved = result.linkCount
+      ? `移動: ${result.moved} — ${result.updated.length} ファイルの ${result.linkCount} リンクを更新`
+      : `移動: ${result.moved}`;
+    if (result.danglingRelations.length > 0) {
+      const list = result.danglingRelations.map((d) => `${d.path} (${d.kind}: ${d.target})`).join(", ");
+      setStatus(`${moved} — 自動で直せない関係（手で修正してください）: ${list}`, "error");
+    } else setStatus(moved);
   } catch (error) {
     reportError(error);
   }
@@ -734,6 +772,83 @@ async function captureDropped(files: File[]): Promise<void> {
   }
 }
 
+// ---- relationship diagrams ----
+
+/** Ask which concept, with the quick switcher's list. Resolves to its path, or null if the palette is dismissed. */
+function pickConceptPath(placeholder: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    void refreshConcepts().then(() => {
+      palette.show(
+        concepts.map((concept) => ({
+          id: concept.id,
+          label: concept.title,
+          detail: concept.id,
+          badge: concept.type,
+          run: () => resolve(concept.path),
+        })),
+        placeholder
+      );
+    });
+  });
+}
+
+const DIAGRAM_DEPTHS = [
+  { depth: 1, label: "深さ 1 — 直接つながるもの" },
+  { depth: 2, label: "深さ 2 — その先まで" },
+  { depth: 3, label: "深さ 3 — さらにその先まで" },
+  { depth: 0, label: "深さ 0 — この概念だけ" },
+];
+
+/**
+ * 関係図を作る: pick a concept, pick how far to follow its links, draw it as a
+ * canvas under wiki/graph/canvases/ and open the result. The drawing is made by
+ * the same code as the `canvas_from_links` tool.
+ */
+async function makeRelationDiagram(rootPath?: string): Promise<void> {
+  if (!bundle) return;
+  const path = rootPath ?? (await pickConceptPath("関係図の中心にする概念を選ぶ"));
+  const root = concepts.find((c) => c.path === path);
+  if (!root) return;
+
+  palette.show(
+    DIAGRAM_DEPTHS.map(({ depth, label }) => ({
+      id: String(depth),
+      label,
+      detail: root.title,
+      run: () =>
+        void (async () => {
+          try {
+            const result = await rpc.request.canvasFromLinks({ root: root.id, depth });
+            await Promise.all([tree.refresh(), refreshConcepts()]);
+            await openFile(result.path);
+            setStatus(
+              `関係図を作成しました: ${result.path}（概念 ${result.concepts} 件、エッジ ${result.edges} 件${
+                result.truncated ? "、上限（概念 150 件・エッジ 5000 件）で打ち切り" : ""
+              }）`
+            );
+          } catch (error) {
+            reportError(error);
+          }
+        })(),
+    })),
+    `${root.title} の関係図 — どこまでたどりますか`
+  );
+}
+
+/** A new, empty canvas to draw by hand. */
+async function createCanvas(): Promise<void> {
+  const name = prompt("新しいキャンバスの名前", "新しいキャンバス");
+  if (name === null) return;
+  try {
+    const { path } = await rpc.request.newCanvas({ name });
+    await tree.refresh();
+    await openFile(path);
+    setStatus(`キャンバスを作成しました: ${path}`);
+  } catch (error) {
+    reportError(error);
+  }
+}
+
 // ---- palette ----
 
 async function openQuickSwitcher(): Promise<void> {
@@ -753,6 +868,8 @@ function openCommandPalette(): void {
     { id: "new", label: "新規ノート…", run: () => void createConcept() },
     { id: "open", label: "フォルダを開く…", run: () => void openBundle() },
     { id: "save", label: "保存", run: () => void save() },
+    { id: "relation-diagram", label: "関係図を作る…（概念のリンクから）", run: () => void makeRelationDiagram() },
+    { id: "new-canvas", label: "新しいキャンバス…", run: () => void createCanvas() },
     { id: "rebuild", label: "index.md と検索インデックスを再構築", run: () => void rebuild() },
     {
       id: "gaps",

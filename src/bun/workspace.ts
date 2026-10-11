@@ -7,6 +7,7 @@
  * cannot drift.
  */
 
+import { readFile } from "fs/promises";
 import { join } from "path";
 import type {
   BundleInfo,
@@ -76,8 +77,27 @@ import {
   type BaseResult,
   type BaseViewResponse,
 } from "../shared/okf/base";
-import { Bundle } from "./okf/bundle";
+import {
+  CANVASES_DIR,
+  GRAPH_SCHEMA_ID,
+  GRAPH_SCHEMA_TYPE,
+  buildGraphCanvas,
+  canvasOutline,
+  compareCodePoints,
+  describeCanvasErrors,
+  isCanvasPath,
+  parseCanvas,
+  parseGraphSchema,
+  renderSystemMap,
+  schemaWarnings,
+  serializeCanvas,
+  type GraphSchema,
+  type SystemMapFacts,
+} from "../shared/okf";
+import { paraOf } from "../shared/okf/para";
+import { Bundle, type MoveResult } from "./okf/bundle";
 import { baseRowOf, listBasePaths, readBaseFile } from "./okf/bases";
+import { canvasFileResolver, listCanvasPaths, readCanvasFile, resolveRootConcept } from "./okf/canvases";
 import { parseBaseYaml } from "./okf/parser";
 import { frontmatterRecord, skeletonConcept } from "./okf/parser";
 import { LOOPS_DIR, RAG_DIR, SKILLS_DIR } from "./okf/paths";
@@ -101,6 +121,9 @@ import { BundleWatcher } from "./watch";
  * edit moments later is still seen.
  */
 const SELF_WRITE_GRACE_MS = 750;
+
+/** How many search hits a `canvas_from_links` query starts from. */
+const QUERY_ROOTS = 5;
 
 export interface WorkspaceOptions {
   /** Enable filesystem watching. Off for one-shot CLI use. */
@@ -271,13 +294,13 @@ export class Workspace {
     to: ParaClass,
     by: "human" | "agent" = "human",
     actor?: string
-  ): Promise<{ from: string; to: string; para: ParaClass; moved: boolean }> {
+  ): Promise<{ from: string; to: string; para: ParaClass; moved: boolean; danglingRelations: MoveResult["danglingRelations"] }> {
     const bundle = this.requireBundle();
     const wikiRel = bundle.paths.toWikiRel(bundle.paths.resolve(path));
     const nextWikiRel = reclassify(wikiRel, to);
 
     if (nextWikiRel === wikiRel) {
-      return { from: path, to: path, para: to, moved: false };
+      return { from: path, to: path, para: to, moved: false, danglingRelations: [] };
     }
 
     const nextPath = bundle.paths.wikiDir ? `${bundle.paths.wikiDir}/${nextWikiRel}` : nextWikiRel;
@@ -289,7 +312,7 @@ export class Workspace {
       actor ?? (by === "agent" ? "process:mcp" : "human:local"),
       by
     );
-    return { from: path, to: result.moved, para: to, moved: true };
+    return { from: path, to: result.moved, para: to, moved: true, danglingRelations: result.danglingRelations };
   }
 
   /** LoopSpace for the open bundle. */
@@ -904,6 +927,262 @@ export class Workspace {
     return found.warnings;
   }
 
+  // ---- canvases and the graph schema ---------------------------------------------
+
+  /** Every `.canvas` file with its size, or why it cannot be read. */
+  async canvasList(): Promise<Array<{ path: string; nodes?: number; edges?: number; error?: string }>> {
+    const bundle = this.requireBundle();
+    const out: Array<{ path: string; nodes?: number; edges?: number; error?: string }> = [];
+    for (const path of await listCanvasPaths(bundle)) {
+      const file = await readCanvasFile(bundle, path).catch(() => null);
+      if (!file) continue;
+      out.push(
+        file.ok
+          ? { path, nodes: file.value.nodes?.length ?? 0, edges: file.value.edges?.length ?? 0 }
+          : { path, error: describeCanvasErrors(file.errors) }
+      );
+    }
+    return out;
+  }
+
+  /** One canvas as structured JSON plus the text outline an agent reads. */
+  async canvasRead(path: string): Promise<{ path: string; nodeCount: number; edgeCount: number; canvas: unknown; outline: string }> {
+    const bundle = this.requireBundle();
+    const file = await readCanvasFile(bundle, path);
+    if (!file.ok) throw new Error(`Invalid canvas ${path}: ${describeCanvasErrors(file.errors)}`);
+    return {
+      path,
+      nodeCount: file.value.nodes?.length ?? 0,
+      edgeCount: file.value.edges?.length ?? 0,
+      canvas: file.value,
+      outline: canvasOutline(file.value, canvasFileResolver(bundle), path),
+    };
+  }
+
+  /**
+   * Validate, then write exactly the text given: unknown keys, the order of
+   * nodes and edges and the author's formatting survive because nothing is
+   * re-serialised.
+   */
+  async canvasWrite(path: string, content: string, opts: { by: "human" | "agent"; actor?: string }): Promise<void> {
+    const bundle = this.requireBundle();
+    if (!isCanvasPath(path)) throw new Error("'path' must end in .canvas");
+    const abs = bundle.paths.resolve(path);
+    const rel = bundle.paths.toRel(abs);
+    if (bundle.paths.layerOf(rel) !== "wiki") {
+      throw new Error(`A .canvas file must live under wiki/: ${path}`);
+    }
+    // In a flat bundle the wiki layer is the whole folder, so the layer check alone
+    // would let a canvas into .okf/, .git/ or any other hidden place.
+    if (rel.split("/").some((segment) => segment === ".." || segment.startsWith("."))) {
+      throw new Error(`A .canvas file cannot live in a hidden folder: ${path}`);
+    }
+    const parsed = parseCanvas(content);
+    if (!parsed.ok) throw new Error(`Invalid canvas, nothing written: ${describeCanvasErrors(parsed.errors)}`);
+    await this.writeFile(path, content, { by: opts.by, ...(opts.actor ? { actor: opts.actor } : {}) });
+  }
+
+  /**
+   * Draw the neighbourhood of a concept, or of what a query finds, as a canvas
+   * and save it. The layout is deterministic (`shared/okf/canvas-graph.ts`).
+   */
+  async canvasFromLinks(opts: {
+    root?: string;
+    query?: string;
+    depth?: number;
+    includeDead?: boolean;
+    paraDepth?: number;
+    groupByPara?: boolean;
+    /** Replace a canvas already at `path`. Off by default: a hand-made canvas must not be lost to a redraw. */
+    overwrite?: boolean;
+    path: string;
+    by: "human" | "agent";
+    actor?: string;
+  }): Promise<{ path: string; concepts: number; edges: number; truncated: boolean; outline: string }> {
+    const bundle = this.requireBundle();
+    const roots: string[] = [];
+    if (opts.root) {
+      const id = resolveRootConcept(bundle, opts.root);
+      if (id === null) throw new Error(`No concept matches root: ${opts.root}`);
+      roots.push(id);
+    }
+    if (opts.query) {
+      const hits = this.search(opts.query, {
+        limit: QUERY_ROOTS,
+        ...(opts.includeDead ? { includeDead: true } : {}),
+        ...(opts.paraDepth !== undefined ? { paraDepth: opts.paraDepth } : {}),
+      });
+      if (hits.length === 0 && roots.length === 0) throw new Error(`No concept matches the query: ${opts.query}`);
+      for (const hit of hits) roots.push(hit.id);
+    }
+
+    // A bare file name goes in the default folder; anything with a folder is taken as written.
+    const target = /[\\/]/.test(opts.path)
+      ? opts.path
+      : `${bundle.paths.wikiDir ? `${bundle.paths.wikiDir}/` : ""}${CANVASES_DIR}/${opts.path}`;
+
+    const result = buildGraphCanvas(
+      bundle.allConcepts().map((doc) => ({
+        id: doc.id,
+        path: doc.relPath,
+        dead: lifecycleOf(tagsOf(doc)) === "dead",
+        links: doc.links.map((l) => ({ resolved: l.resolved, ...(l.relation !== undefined ? { relation: l.relation } : {}) })),
+      })),
+      {
+        roots,
+        depth: opts.depth ?? 1,
+        includeDead: opts.includeDead === true,
+        ...(opts.paraDepth !== undefined ? { paraDepth: opts.paraDepth } : {}),
+        groupByPara: opts.groupByPara === true,
+      }
+    );
+    if (opts.overwrite !== true && (await bundle.exists(target))) {
+      throw new Error(`${target} already exists; pass overwrite: true to replace it`);
+    }
+    await this.canvasWrite(target, serializeCanvas(result.canvas), {
+      by: opts.by,
+      ...(opts.actor ? { actor: opts.actor } : {}),
+    });
+    return {
+      path: target,
+      concepts: result.concepts,
+      edges: result.edges,
+      truncated: result.truncated,
+      outline: canvasOutline(result.canvas, canvasFileResolver(bundle), target),
+    };
+  }
+
+  /** A path in the default canvas folder that nothing uses yet: `stem.canvas`, then `stem-2.canvas`, ... */
+  async uniqueCanvasPath(stem: string): Promise<string> {
+    const bundle = this.requireBundle();
+    const dir = `${bundle.paths.wikiDir ? `${bundle.paths.wikiDir}/` : ""}${CANVASES_DIR}`;
+    for (let n = 1; ; n++) {
+      const path = `${dir}/${stem}${n === 1 ? "" : `-${n}`}.canvas`;
+      if (!(await bundle.exists(path))) return path;
+    }
+  }
+
+  /** The schema concept, parsed, or `null` when the bundle has none. */
+  private loadGraphSchema(): { schema: GraphSchema; type: string } | null {
+    const doc = this.requireBundle().getConcept(GRAPH_SCHEMA_ID);
+    if (!doc) return null;
+    return { schema: parseGraphSchema(doc.frontmatter as Record<string, unknown>), type: doc.frontmatter.type };
+  }
+
+  /** `graph_schema`: the declared concept types and relation kinds. */
+  graphSchema(): {
+    path: string;
+    exists: boolean;
+    types: NonNullable<GraphSchema["types"]>;
+    kinds: NonNullable<GraphSchema["kinds"]>;
+    problems?: string[];
+  } {
+    const path = this.requireBundle().paths.relPathOfId(GRAPH_SCHEMA_ID);
+    const loaded = this.loadGraphSchema();
+    if (!loaded) return { path, exists: false, types: [], kinds: [] };
+    const problems = [...loaded.schema.problems];
+    if (loaded.type !== GRAPH_SCHEMA_TYPE) problems.unshift(`the schema concept's type should be ${GRAPH_SCHEMA_TYPE}`);
+    return {
+      path,
+      exists: true,
+      types: loaded.schema.types ?? [],
+      kinds: loaded.schema.kinds ?? [],
+      ...(problems.length > 0 ? { problems } : {}),
+    };
+  }
+
+  /**
+   * Concept types and relation kinds outside the schema, per concept. Empty
+   * when there is no schema, so a bundle that never made one sees nothing.
+   */
+  schemaWarnings(): Array<{ path: string; warnings: string[] }> {
+    const bundle = this.requireBundle();
+    const loaded = this.loadGraphSchema();
+    if (!loaded) return [];
+    return schemaWarnings(loaded.schema, bundle.allConcepts(), bundle.paths.wikiDir);
+  }
+
+  // ---- SYSTEMMAP.md -----------------------------------------------------------------
+
+  private async systemMapFacts(toolCount: number): Promise<SystemMapFacts> {
+    const bundle = this.requireBundle();
+    const docs = bundle.allConcepts();
+    const para = { project: 0, area: 0, resource: 0, archive: 0 };
+    const types = new Map<string, number>();
+    let dead = 0;
+    let knowhow = 0;
+    for (const doc of docs) {
+      para[paraOf(doc.id)] += 1;
+      const type = String(doc.frontmatter.type);
+      types.set(type, (types.get(type) ?? 0) + 1);
+      if (lifecycleOf(tagsOf(doc)) === "dead") dead += 1;
+      if (doc.id.startsWith(`${KNOWHOW_DIR}/`)) knowhow += 1;
+    }
+
+    const loops = this.requireLoops();
+    const loopFacts: SystemMapFacts["loops"] = [];
+    for (const name of [...(await loops.list())].sort(compareCodePoints)) {
+      const design = await loops.read(name).catch(() => null);
+      if (design) loopFacts.push({ name: design.name, goal: design.goal });
+    }
+
+    const schema = this.loadGraphSchema()?.schema ?? null;
+    return {
+      concepts: docs.length,
+      dead,
+      knowhow,
+      toolCount,
+      para,
+      types: [...types.entries()].sort((a, b) => b[1] - a[1] || compareCodePoints(a[0], b[0])),
+      bases: (await this.baseList()).map((b) => ({
+        path: b.path,
+        views: b.views.map((v) => v.name),
+        ...(b.error !== undefined ? { error: b.error } : {}),
+      })),
+      canvases: await this.canvasList(),
+      skills: (await this.requireSkills().summaries())
+        .map((s) => ({ name: s.name, description: s.description }))
+        .sort((a, b) => compareCodePoints(a.name, b.name)),
+      loops: loopFacts,
+      schema: schema && {
+        types: schema.types?.map((t) => t.name) ?? null,
+        kinds: schema.kinds?.map((k) => ({ name: k.name, ...(k.from ? { from: k.from } : {}), ...(k.to ? { to: k.to } : {}) })) ?? null,
+      },
+    };
+  }
+
+  /**
+   * SYSTEMMAP.md, as it is on disk. With `refresh`, the section between the
+   * markers is regenerated from the bundle and written; the text around it is
+   * not touched. A bundle that has none gets the file on the first refresh.
+   */
+  async systemMap(opts: { refresh?: boolean; actor?: string; toolCount: number }): Promise<string> {
+    const bundle = this.requireBundle();
+    const path = bundle.paths.toRel(bundle.paths.systemMapMdPath);
+    let previous: string | undefined;
+    try {
+      previous = await readFile(bundle.paths.systemMapMdPath, "utf8");
+    } catch (error) {
+      // Only "not there" means absent. A locked or unreadable file must not be
+      // taken for a missing one, or the refresh would overwrite it.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      previous = undefined;
+    }
+    if (!opts.refresh) {
+      return previous ?? renderSystemMap(undefined, await this.systemMapFacts(opts.toolCount));
+    }
+
+    const next = renderSystemMap(previous, await this.systemMapFacts(opts.toolCount));
+    if (next !== previous) {
+      await this.writeFile(path, next, {
+        by: "agent",
+        actor: opts.actor || "process:mcp",
+        action: previous === undefined ? "create" : "write",
+      });
+    }
+    return next;
+  }
+
   tags(): TagCount[] {
     return this.requireFts().tags();
   }
@@ -941,7 +1220,7 @@ export class Workspace {
       .sort((a, b) => a.id.localeCompare(b.id));
   }
 
-  unresolvedLinks(): Array<{ from: string; target: string }> {
+  unresolvedLinks(): Array<{ from: string; target: string; relation?: string }> {
     return this.requireBundle().unresolvedLinks();
   }
 
@@ -960,7 +1239,7 @@ export class Workspace {
     to: string,
     actor = "human:local",
     by: "human" | "agent" = "human"
-  ): Promise<{ moved: string; updated: string[]; linkCount: number }> {
+  ): Promise<MoveResult> {
     const bundle = this.requireBundle();
     this.markSelfWrite(from);
     this.markSelfWrite(to);

@@ -15,6 +15,7 @@ import ingestReference from "../../../templates/bundle-skeleton/skills/okf-inges
 import answerSkill from "../../../templates/bundle-skeleton/skills/wiki-answer/SKILL.md" with { type: "text" };
 import lintSkill from "../../../templates/bundle-skeleton/skills/wiki-lint/SKILL.md" with { type: "text" };
 import productsBase from "../../../templates/bundle-skeleton/wiki/bases/products-and-dead.base" with { type: "text" };
+import graphSchema from "../../../templates/bundle-skeleton/wiki/graph/schema.md" with { type: "text" };
 import loopsReadme from "../../../templates/bundle-skeleton/loops/README.md" with { type: "text" };
 import ingestLoop from "../../../templates/bundle-skeleton/loops/ingest-notes.md" with { type: "text" };
 import lintLoop from "../../../templates/bundle-skeleton/loops/weekly-lint.md" with { type: "text" };
@@ -23,11 +24,16 @@ import {
   ACTIVITY_TITLE,
   BASES_DIR,
   BASES_TITLE,
+  CANVASES_DIR,
+  CANVASES_TITLE,
+  GRAPH_DIR,
+  GRAPH_TITLE,
   KNOWHOW_DIR,
   KNOWHOW_TITLE,
   OKF_VERSION,
   emptyLogMd,
   renderIndexMd,
+  renderSystemMap,
 } from "../../shared/okf";
 import { LOOPS_DIR, RAG_DIR, RAW_DIR, SKILLS_DIR, WIKI_DIR } from "./paths";
 import { PARA_DIRS, PARA_ORDER } from "../../shared/okf/para";
@@ -37,6 +43,7 @@ import {
   renderHumanTemplate,
   renderMap,
   renderTasks,
+  SYSTEMMAP_FILE,
   TASK_FILE,
 } from "../../shared/okf/workspace-files";
 
@@ -101,6 +108,8 @@ export async function scaffoldBundle(root: string): Promise<ScaffoldResult> {
   await mkdir(join(wikiRoot, ACTIVITY_DIR), { recursive: true });
   // Saved list and aggregate views (Obsidian Bases), not concepts.
   await mkdir(join(wikiRoot, BASES_DIR), { recursive: true });
+  // The knowledge-graph design: a schema (a concept) and canvases (not concepts).
+  await mkdir(join(wikiRoot, CANVASES_DIR), { recursive: true });
 
   const files: Array<[string, string]> = [
     [join(WIKI_DIR, "AGENTS.md"), agentsMdTemplate],
@@ -110,6 +119,9 @@ export async function scaffoldBundle(root: string): Promise<ScaffoldResult> {
     // start as templates because an empty prompt is answered and an empty file
     // is not.
     [MAP_FILE, renderMap()],
+    // The map of the system itself. Its generated section is filled in by
+    // `system_map { refresh: true }`, which needs the bundle open.
+    [SYSTEMMAP_FILE, renderSystemMap(undefined, null)],
     [HUMAN_FILE, renderHumanTemplate()],
     [TASK_FILE, renderTasks({ tasks: [], doneEver: 0 })],
     [join(RAW_DIR, "README.md"), RAW_README],
@@ -133,6 +145,9 @@ export async function scaffoldBundle(root: string): Promise<ScaffoldResult> {
     [join(WIKI_DIR, BASES_DIR, "index.md"), renderIndexMd(BASES_TITLE, [])],
     // One working example, so a base is something to copy rather than to invent.
     [join(WIKI_DIR, BASES_DIR, "products-and-dead.base"), productsBase],
+    [join(WIKI_DIR, GRAPH_DIR, "index.md"), renderIndexMd(GRAPH_TITLE, [])],
+    [join(WIKI_DIR, GRAPH_DIR, "schema.md"), graphSchema],
+    [join(WIKI_DIR, CANVASES_DIR, "index.md"), renderIndexMd(CANVASES_TITLE, [])],
   ];
 
   for (const [rel, content] of files) {

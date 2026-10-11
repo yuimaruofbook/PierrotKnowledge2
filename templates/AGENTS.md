@@ -20,6 +20,7 @@
 ```
 bundle-root/
 ├── MAP.md             ← 経路表。**最初に読む**。層ではない
+├── SYSTEMMAP.md       ← システムの全体像と拡張のしかた。層ではない
 ├── human.md           ← 利用者について。層ではない
 ├── Task.md            ← 未完了と直近の完了。層ではない
 ├── raw/               ← Layer 1: 人間の受信箱。原本を置く。AI は書き込めない
@@ -33,6 +34,8 @@ bundle-root/
 │   ├── loops/         ← ループ設計と実行履歴。1 設計 = 1 ファイル
 │   ├── knowhow/       ← ノウハウ: エージェントが残す短い学び（type: Knowhow）
 │   ├── activity/      ← 保存した活動サマリ（type: ActivitySummary）
+│   ├── bases/         ← 一覧・集計ビュー .base（概念ではない）
+│   ├── graph/         ← 知識グラフの設計: schema.md（型 GraphSchema）と canvases/（.canvas）
 │   ├── index.md       ← 予約ファイル（frontmatter なし）
 │   └── log.md         ← 予約ファイル（日付グループ・新しい順）
 └── .rag/              ← Layer 3: 派生インデックス。再構築可能。手編集しない
@@ -40,7 +43,7 @@ bundle-root/
 
 **層は 3 つだけです。**
 
-- `MAP.md`・`human.md`・`Task.md` は**層の外**、バンドル直下にあります。
+- `MAP.md`・`SYSTEMMAP.md`・`human.md`・`Task.md` は**層の外**、バンドル直下にあります。
   3 層は同じ素材の 3 つの段階（原本 → 正典 → 派生）ですが、この 3 つは
   その素材ではありません。置き場所の説明・人・進行中の作業であって、
   知識でも知識の派生物でもないからです。
@@ -203,7 +206,10 @@ MCP ツール（典型的な順序）:
     （下の「ノウハウ」）
 14. `base_list` / `base_query` / `base_write` — 一覧・件数・集計はベースに聞く
     （下の「ベース」）
-15. `rebuild_index` / `rebuild_rag` — 必要時のみ
+15. `canvas_list` / `canvas_read` / `canvas_from_links` / `canvas_write` / `graph_schema` —
+    概念の関係を図で読む・描く、型と関係の種類を知る（下の「関係図」「型付き関係とスキーマ」）
+16. `system_map` — SYSTEMMAP.md を読む・更新する（下の「SYSTEMMAP」）
+17. `rebuild_index` / `rebuild_rag` — 必要時のみ
 
 ### ノウハウ — エージェント間で学びを渡す
 
@@ -240,6 +246,60 @@ Obsidian Bases と同じ YAML なので、Obsidian でも開けます。`wiki/` 
   `groupBy` / `summaries`）です。`file.para`（project など）も使えます。
 - 未対応の項目（`file.size` など）は空として扱われ、`base_query` の `warnings` に出ます。
   知らないキーは消さずにそのまま残してください。
+
+### 関係図（キャンバス）— 関係は図で読む
+
+キャンバス（`.canvas`）は概念の関係図です。形式は JSON Canvas 1.0 で、Obsidian でもそのまま
+開けます。`wiki/` のどこにでも置け（既定は `wiki/graph/canvases/`）、概念ではないので
+検索インデックスにも入りません。
+
+- **関係をたどる前に `canvas_list` を見る。** 合う図があれば `canvas_read { path }` が
+  構造（JSON）と、グループ別・エッジのラベル付きの短いアウトラインを返します。
+  ファイルノードは概念のタイトルと説明に解決されます。
+- **ある概念の周辺を知りたいときは `canvas_from_links { root | query, depth?, path }`。**
+  リンクと型付き関係をたどって図を作り、保存します（`depth` は 0〜3。位置は決定的で、
+  同じ入力なら同じファイルになります）。普通のリンクにはラベルがなく、型付き関係には
+  種類（`depends_on` など）が付きます。同じパスに既に図があるときは上書きせずエラーに
+  なります（置き換えるなら `overwrite: true`）。
+- 手書きするなら `canvas_write { path, content }`。仕様と大きさの上限（1 MiB・ノード 2000・
+  エッジ 5000）を検証してから渡した文面のまま保存するので、知らないキーや並び順は
+  Obsidian との往復で保たれます。ファイルノードの `file` はバンドルからの相対パス
+  （`wiki/3-resources/foo.md`）で書きます。
+
+### 型付き関係とスキーマ — 関係に種類を付ける
+
+概念は frontmatter に型付き関係を書けます。パスでも `[[リンク]]` でもかまいません。
+
+```yaml
+relations:
+  depends_on: [3-resources/a, "[[b]]"]
+  part_of: wiki/1-projects/p.md
+```
+
+- 本文のリンクと同じく**リンクとして数えられます**（バックリンク、`unresolved_links`、
+  `link_depth`）。`unresolved_links` は関係の行に `relation` を付けて返します。
+- `wiki/graph/schema.md`（型 `GraphSchema`）が、このバンドルで使う概念の `types` と
+  関係の `kinds`（名前・説明・任意で `from` / `to` の型）を宣言します。`graph_schema` で
+  読めます。
+- **宣言にない型・関係の種類は `graph_schema` の `warnings` に出ます**（エラーではなく、
+  `loop_end` の非準拠にも数えません）。新しい型や種類を使い始めたら、まずスキーマに足して
+  ください。スキーマが無いバンドルでは何も警告しません。
+- `move_file` / `set_para` は、移動したファイルを指す `relations` の項目も、書かれていた形のまま
+  その場で書き換えます（移動したファイル自身の相対パスも直します）。安全に編集できない書き方
+  （複数行の `[ ]`、アンカーなど）は触らず、結果に「dangle する関係」として出るので手で直してください。
+
+### SYSTEMMAP — システムの地図
+
+`SYSTEMMAP.md`（バンドル直下、MAP.md の隣）は、層・フォルダ・ツールの群・ベース／キャンバス／
+スキル／ループ／ノウハウ／グラフの置き場所と、**拡張のしかた**（型・関係の種類・ベース・
+キャンバス・スキル・ループ・MCP ツールを足す手順）を説明します。マーカーの間は自動生成で、
+現在の件数と一覧が入ります。
+
+- 構造を変える前に `system_map` で読む。
+- **型・関係の種類・ベース・キャンバス・スキル・ループを足したら `system_map { refresh: true }`。**
+  マーカーの間だけが書き換わり、外の文章は 1 バイトも変わりません。SYSTEMMAP.md が無い
+  バンドルは、最初の refresh で作られます。開始マーカーと終了マーカーが 1 組ちょうど無い
+  ファイル（片方だけ、逆順、重複）は書き換えず、どちらを戻すかをエラーで返します。
 
 ### 活動サマリ — 何があったかを辿れる形で
 

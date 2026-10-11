@@ -119,12 +119,16 @@ export const COMMAND_GROUPS: ReadonlyArray<readonly [string, readonly string[]]>
     ],
   ],
   ["知識を書く", ["create_concept", "write_file", "move_file", "delete_file"]],
-  ["方向づけ", ["read_map", "read_human", "list_tasks", "add_task", "update_task"]],
+  ["方向づけ", ["read_map", "system_map", "read_human", "list_tasks", "add_task", "update_task"]],
   ["デイリーノート", ["daily_note", "collect_daily_tasks"]],
   ["PARA", ["list_para", "set_para", "set_lifecycle"]],
   ["スキル", ["skill_find", "skill_list", "skill_open", "skill_read"]],
   ["ノウハウ", ["knowhow_find", "knowhow_add"]],
   ["ベース（一覧・集計ビュー）", ["base_list", "base_query", "base_write"]],
+  [
+    "関係図・グラフ",
+    ["canvas_list", "canvas_read", "canvas_write", "canvas_from_links", "graph_schema"],
+  ],
   ["ループ", ["loop_list", "loop_start", "loop_note", "loop_end", "loop_read"]],
   [
     "点検",

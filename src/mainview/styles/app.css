@@ -2480,3 +2480,382 @@ kbd,
   margin: 6px 0 0;
   padding-left: 18px;
 }
+
+/* ---------- canvases (.canvas files) ---------- */
+
+/*
+ * The six preset colours of JSON Canvas. The spec leaves their values open, so
+ * these are this app's: readable on the light and the dark surface, and apart
+ * from the accent green.
+ */
+:root {
+  --cv-c1: #d1433f;
+  --cv-c2: #d9730d;
+  --cv-c3: #b89400;
+  --cv-c4: #2f9e5b;
+  --cv-c5: #1b8fa3;
+  --cv-c6: #7a5bd1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --cv-c1: #f0766f;
+    --cv-c2: #f0994a;
+    --cv-c3: #e2c24a;
+    --cv-c4: #58d08a;
+    --cv-c5: #4cc3d6;
+    --cv-c6: #a68cf0;
+  }
+}
+
+/* The preview pane doubles as the canvas: edge to edge, and it never scrolls itself. */
+.preview.canvas-root {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+.cv-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px var(--gutter);
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface);
+}
+
+.cv-toolbar .spacer {
+  flex: 1 1 auto;
+}
+
+.cv-toolbar .btn:disabled {
+  color: var(--text-faint);
+}
+
+.cv-swatches {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 8px;
+  border-left: 1px solid var(--border-soft);
+}
+
+.cv-swatches.disabled {
+  opacity: 0.4;
+}
+
+.cv-swatch {
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.cv-swatch:disabled {
+  cursor: default;
+}
+
+.cv-swatch:hover:not(:disabled) {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* "No colour": a slash through an empty square. */
+.cv-swatch-none {
+  background: linear-gradient(135deg, transparent 46%, var(--text-faint) 46% 54%, transparent 54%), var(--surface);
+}
+
+.cv-zoom {
+  min-width: 28px;
+  padding: 0 6px;
+}
+
+.cv-zoom-label {
+  min-width: 40px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.cv-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background:
+    radial-gradient(circle, var(--border-soft) 1px, transparent 1.2px) 0 0 / 24px 24px,
+    var(--bg);
+  outline: none;
+}
+
+.cv-stage:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+
+.cv-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.cv-svg:active {
+  cursor: grabbing;
+}
+
+.cv-hint {
+  position: absolute;
+  left: 50%;
+  top: 40%;
+  width: min(520px, 80%);
+  transform: translateX(-50%);
+  color: var(--text-faint);
+  font-size: 12.5px;
+  line-height: 1.7;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* ---- nodes ---- */
+
+.cv-node {
+  --node-color: var(--border);
+  cursor: default;
+}
+
+.cv-box {
+  fill: color-mix(in srgb, var(--node-color) 10%, var(--surface));
+  stroke: var(--node-color);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.cv-node.cv-text .cv-box,
+.cv-node.cv-file .cv-box,
+.cv-node.cv-link .cv-box {
+  fill: color-mix(in srgb, var(--node-color) 8%, var(--surface));
+}
+
+/* A group's inside is not clickable: what lies in it, and the canvas behind, stay reachable. */
+.cv-node.cv-group .cv-box {
+  fill: color-mix(in srgb, var(--node-color) 7%, transparent);
+  stroke-dasharray: 6 4;
+  pointer-events: stroke;
+}
+
+.cv-group-bar {
+  fill: transparent;
+  pointer-events: all;
+  cursor: move;
+}
+
+.cv-group-label {
+  fill: var(--text-muted);
+  font: 600 12px/1 var(--sans);
+  pointer-events: none;
+}
+
+.cv-bar {
+  fill: color-mix(in srgb, var(--node-color) 18%, var(--surface-2));
+  pointer-events: all;
+  cursor: move;
+}
+
+.cv-bar-label {
+  fill: var(--text-muted);
+  font: 500 10.5px/1 var(--mono);
+  pointer-events: none;
+}
+
+.cv-node.cv-text .cv-body {
+  cursor: move;
+}
+
+.cv-node.cv-file .cv-body,
+.cv-node.cv-link .cv-body {
+  cursor: pointer;
+}
+
+.cv-fo {
+  overflow: hidden;
+}
+
+.cv-body {
+  width: 100%;
+  height: 100%;
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--text);
+  font: 400 13px/1.5 var(--sans);
+  word-break: break-word;
+}
+
+.cv-body > :first-child {
+  margin-top: 0;
+}
+
+.cv-body > :last-child {
+  margin-bottom: 0;
+}
+
+.cv-body h1,
+.cv-body h2,
+.cv-body h3 {
+  margin: 0.2em 0 0.4em;
+  font-size: 1.1em;
+}
+
+.cv-body p {
+  margin: 0 0 0.5em;
+}
+
+/* Links inside a node are text: a click selects or opens the node, it does not navigate. */
+.cv-body a {
+  color: var(--accent);
+  pointer-events: none;
+}
+
+.cv-file-title {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cv-file-desc,
+.cv-link-url {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.cv-sel {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+  display: none;
+}
+
+.cv-node.selected .cv-sel {
+  display: block;
+}
+
+.cv-resize {
+  fill: var(--surface);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  display: none;
+}
+
+.cv-resize[data-resize="nw"],
+.cv-resize[data-resize="se"] {
+  cursor: nwse-resize;
+}
+
+.cv-resize[data-resize="ne"],
+.cv-resize[data-resize="sw"] {
+  cursor: nesw-resize;
+}
+
+.cv-port {
+  fill: var(--accent);
+  stroke: var(--surface);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  cursor: crosshair;
+  display: none;
+}
+
+.cv-node.lone .cv-resize,
+.cv-node.lone .cv-port {
+  display: block;
+}
+
+/* ---- edges ---- */
+
+.cv-edge {
+  --edge-color: var(--text-faint);
+}
+
+.cv-edge-line {
+  fill: none;
+  stroke: var(--edge-color);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+.cv-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.cv-arrow {
+  fill: var(--edge-color);
+  pointer-events: none;
+}
+
+.cv-edge-label {
+  fill: var(--text);
+  font: 500 12px/1 var(--sans);
+  /* A halo in the surface colour keeps the label legible where the line passes behind it. */
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.cv-edge.selected .cv-edge-line {
+  stroke: var(--accent);
+  stroke-width: 3;
+}
+
+.cv-edge.selected .cv-arrow {
+  fill: var(--accent);
+}
+
+.cv-connect-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* The in-place editor for a node's text or an edge's label. */
+.cv-editor {
+  position: absolute;
+  z-index: 3;
+  min-width: 80px;
+  min-height: 28px;
+  padding: 8px 10px;
+  border: 2px solid var(--accent);
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: 400 13px/1.5 var(--sans);
+  resize: none;
+  outline: none;
+}
+
+.cv-error {
+  padding: 24px var(--gutter);
+}

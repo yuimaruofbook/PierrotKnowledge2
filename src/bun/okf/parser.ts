@@ -4,6 +4,7 @@
 
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ConceptDocument, ConceptFrontmatter } from "../../shared/types";
+import { relationLinks } from "../../shared/okf/graph-schema";
 import {
   DEFAULT_CONCEPT_TYPE,
   conceptIdFromRelPath,
@@ -26,6 +27,22 @@ export interface ParseConceptOptions {
   mtimeMs?: number;
   /** Ids used to resolve `[[wikilinks]]`; omit during a first pass. */
   knownIds?: ReadonlySet<string>;
+  /** The bundle's wiki folder (`wiki`, or `""` when flat), so a relation may name `wiki/x.md`. */
+  wikiDir?: string;
+}
+
+/** Body links, then the typed relations of the frontmatter: both are the concept's links. */
+export function conceptLinks(
+  frontmatter: ConceptFrontmatter,
+  body: string,
+  id: string,
+  knownIds: ReadonlySet<string> | undefined,
+  wikiDir: string
+): ConceptDocument["links"] {
+  return [
+    ...extractLinks(body, id, knownIds),
+    ...relationLinks(frontmatter as Record<string, unknown>, id, knownIds, wikiDir),
+  ];
 }
 
 /**
@@ -103,7 +120,7 @@ export function parseConcept(opts: ParseConceptOptions): ConceptDocument {
     relPath: opts.relPath,
     frontmatter,
     body: trimmedBody,
-    links: extractLinks(trimmedBody, id, opts.knownIds),
+    links: conceptLinks(frontmatter, trimmedBody, id, opts.knownIds, opts.wikiDir ?? ""),
     mtimeMs: opts.mtimeMs ?? 0,
   };
 }

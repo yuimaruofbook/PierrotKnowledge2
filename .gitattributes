@@ -1,0 +1,7 @@
+# LF everywhere: several tools on this Windows machine wrote CRLF, which turned
+# small edits into whole-file diffs. cmd.exe parses .bat line by line and
+# wants CRLF.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.ico binary

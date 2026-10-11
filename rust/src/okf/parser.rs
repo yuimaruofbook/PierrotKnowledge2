@@ -11,8 +11,9 @@
 use crate::shared::js_compat::{find_at_line_start, js_trim, js_trim_end, utf16_len};
 use crate::shared::okf::concept::{concept_id_from_rel_path, DEFAULT_CONCEPT_TYPE};
 use crate::shared::okf::frontmatter::{join_frontmatter, split_frontmatter, Eol};
+use crate::shared::okf::graph_schema::relation_links;
 use crate::shared::okf::links::extract_links;
-use crate::shared::types::{ConceptDocument, ConceptFrontmatter};
+use crate::shared::types::{ConceptDocument, ConceptFrontmatter, ConceptLink};
 use regex::Regex;
 use serde_json::{Map, Number, Value};
 use std::collections::HashSet;
@@ -35,6 +36,22 @@ pub struct ParseConceptOptions<'a> {
     pub mtime_ms: Option<f64>,
     /// Ids used to resolve `[[wikilinks]]`; omit during a first pass.
     pub known_ids: Option<&'a HashSet<String>>,
+    /// The bundle's wiki folder (`wiki`, or `""` when flat), so a relation may name `wiki/x.md`.
+    pub wiki_dir: &'a str,
+}
+
+/// Body links, then the typed relations of the frontmatter: both are the concept's links.
+pub fn concept_links(
+    frontmatter: &ConceptFrontmatter,
+    body: &str,
+    id: &str,
+    known_ids: Option<&HashSet<String>>,
+    wiki_dir: &str,
+) -> Vec<ConceptLink> {
+    let mut links = extract_links(body, id, known_ids);
+    // `relations` is not a typed field, so it is in `extra`.
+    links.extend(relation_links(&frontmatter.extra, id, known_ids, wiki_dir));
+    links
 }
 
 // ---- YAML parsing -----------------------------------------------------------
@@ -326,7 +343,7 @@ pub fn parse_concept(opts: ParseConceptOptions) -> ConceptDocument {
         opts.id.clone()
     };
     let body = split.body.trim_start_matches(['\r', '\n']).to_string();
-    let links = extract_links(&body, &id, opts.known_ids);
+    let links = concept_links(&frontmatter, &body, &id, opts.known_ids, opts.wiki_dir);
 
     ConceptDocument {
         id,

@@ -36,11 +36,12 @@ import {
   conceptIdFromRelPath,
   conceptTitle,
   emptyLogMd,
-  extractLinks,
   insertLogEntry,
   isConceptPath,
   isReservedFilename,
   rebaseOwnLinks,
+  rebaseOwnRelations,
+  relationsAfterMove,
   renderIndexMd,
   resolveLinkTarget,
   rewriteLinks,
@@ -49,7 +50,7 @@ import {
   readOkfVersion,
   type IndexSection,
 } from "../../shared/okf";
-import { parseConcept } from "./parser";
+import { conceptLinks, parseConcept, parseFrontmatter } from "./parser";
 import {
   BundlePaths,
   RAW_DIR,
@@ -107,6 +108,15 @@ function reasonOf(error: unknown): string {
   return error.message.replace(/,\s*(?:open|mkdir|unlink|rename|stat)\s+'[^']*'\s*$/, "");
 }
 
+/** What a move did, and the typed relations it could not follow. */
+export interface MoveResult {
+  moved: string;
+  updated: string[];
+  linkCount: number;
+  /** Relation entries that now point nowhere because their text could not be edited safely. */
+  danglingRelations: Array<{ path: string; kind: string; target: string }>;
+}
+
 export class Bundle {
   readonly paths: BundlePaths;
 
@@ -160,7 +170,7 @@ export class Bundle {
     // Two passes: wikilinks can only be resolved once every id is known.
     const knownIds = new Set(found.map((doc) => doc.id));
     for (const doc of found) {
-      doc.links = extractLinks(doc.body, doc.id, knownIds);
+      doc.links = conceptLinks(doc.frontmatter, doc.body, doc.id, knownIds, this.paths.wikiDir);
     }
 
     this.concepts = new Map(found.map((doc) => [doc.id, doc]));
@@ -364,6 +374,7 @@ export class Bundle {
       raw: content,
       mtimeMs,
       knownIds: this.conceptIds(),
+      wikiDir: this.paths.wikiDir,
     });
     this.indexConcept(concept);
 
@@ -403,6 +414,7 @@ export class Bundle {
         raw: content,
         mtimeMs,
         knownIds: this.conceptIds(),
+      wikiDir: this.paths.wikiDir,
       });
       this.indexConcept(concept);
     }
@@ -449,6 +461,7 @@ export class Bundle {
       raw: content,
       mtimeMs: (await stat(abs)).mtimeMs,
       knownIds: this.conceptIds(),
+      wikiDir: this.paths.wikiDir,
     });
     this.indexConcept(concept);
     return concept;
@@ -476,7 +489,7 @@ export class Bundle {
     fromRel: string,
     toRel: string,
     opts: { actor?: string; by?: "human" | "agent" } = {}
-  ): Promise<{ moved: string; updated: string[]; linkCount: number }> {
+  ): Promise<MoveResult> {
     // Crossing layers is a curation decision with its own rule; `assertWritable`
     // only answers "may this path be edited".
     this.paths.assertMovable(fromRel, toRel, opts.by ?? "human");
@@ -495,22 +508,27 @@ export class Bundle {
     // made each existing link point where it does.
     const knownIds = this.conceptIds();
     const updated: string[] = [];
+    const danglingRelations: MoveResult["danglingRelations"] = [];
     let linkCount = 0;
 
     if (wasConcept && isConceptPath(this.paths.toRel(toAbs)) && oldId !== newId) {
       // The moved document's own relative links are rebased before it moves,
       // while its old location is still the anchor they were written against.
       const source = await readFile(fromAbs, "utf8");
-      const { yaml, body } = splitFrontmatter(source);
+      const relations = parseFrontmatter(splitFrontmatter(source).yaml).relations;
+      const own = rebaseOwnRelations(source, relations, oldId, newId, knownIds, this.paths.wikiDir);
+      const { yaml, body } = splitFrontmatter(own.raw);
       const rebased = rebaseOwnLinks(body, oldId, newId, knownIds);
-      if (rebased.count > 0) {
+      if (rebased.count > 0 || own.count > 0) {
         await writeFile(
           fromAbs,
-          yaml === null ? rebased.body : joinFrontmatter(yaml, rebased.body),
+          rebased.count > 0 && yaml !== null ? joinFrontmatter(yaml, rebased.body) : rebased.count > 0 ? rebased.body : own.raw,
           "utf8"
         );
-        linkCount += rebased.count;
+        linkCount += rebased.count + own.count;
       }
+      const newRel = this.paths.toRel(toAbs);
+      for (const u of own.unsafe) danglingRelations.push({ path: newRel, ...u });
     }
 
     await mkdir(dirname(toAbs), { recursive: true });
@@ -522,17 +540,22 @@ export class Bundle {
         if (!doc.links.some((link) => link.resolved === oldId)) continue;
 
         const source = await readFile(doc.path, "utf8");
-        const { yaml, body } = splitFrontmatter(source);
+        // Typed relations first: they are edited in the frontmatter text in
+        // place, and whatever cannot be is reported rather than left silent.
+        const relations = parseFrontmatter(splitFrontmatter(source).yaml).relations;
+        const moved = relationsAfterMove(source, relations, id, oldId, newId, knownIds, this.paths.wikiDir);
+        for (const u of moved.unsafe) danglingRelations.push({ path: doc.relPath, ...u });
+        const { yaml, body } = splitFrontmatter(moved.raw);
         const result = rewriteLinks(body, id, oldId, newId, knownIds);
-        if (result.count === 0) continue;
+        if (result.count === 0 && moved.count === 0) continue;
 
         await writeFile(
           doc.path,
-          yaml === null ? result.body : joinFrontmatter(yaml, result.body),
+          result.count === 0 ? moved.raw : yaml === null ? result.body : joinFrontmatter(yaml, result.body),
           "utf8"
         );
         updated.push(doc.relPath);
-        linkCount += result.count;
+        linkCount += result.count + moved.count;
       }
     }
 
@@ -548,7 +571,7 @@ export class Bundle {
       });
     }
 
-    return { moved: this.paths.toRel(toAbs), updated, linkCount };
+    return { moved: this.paths.toRel(toAbs), updated, linkCount, danglingRelations };
   }
 
   /**
@@ -699,13 +722,18 @@ export class Bundle {
     return counts;
   }
 
-  /** Concepts whose wikilinks point at ids that do not exist yet. */
-  unresolvedLinks(): Array<{ from: string; target: string }> {
-    const out: Array<{ from: string; target: string }> = [];
+  /**
+   * Concepts whose wikilinks, or typed relations, point at ids that do not
+   * exist yet. A relation says which kind it was.
+   */
+  unresolvedLinks(): Array<{ from: string; target: string; relation?: string }> {
+    const out: Array<{ from: string; target: string; relation?: string }> = [];
     for (const doc of this.concepts.values()) {
       for (const link of doc.links) {
-        if (link.resolved === null && link.kind === "wikilink") {
-          out.push({ from: doc.id, target: link.target });
+        if (link.resolved !== null) continue;
+        if (link.kind === "wikilink") out.push({ from: doc.id, target: link.target });
+        else if (link.kind === "relation") {
+          out.push({ from: doc.id, target: link.target, ...(link.relation !== undefined ? { relation: link.relation } : {}) });
         }
       }
     }

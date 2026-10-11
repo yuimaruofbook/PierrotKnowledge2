@@ -305,6 +305,26 @@ export function createRequestHandlers(
     rebuildIndex: () => workspace.rebuildIndex(),
 
     baseView: ({ path, view }) => workspace.baseView(path, view),
+
+    async canvasFromLinks({ root, depth, includeDead, groupByPara }) {
+      const stem = `${(root.split("/").pop() ?? root).replace(/[\\/:*?"<>|\s]+/g, "-") || "canvas"}-relations`;
+      const result = await workspace.canvasFromLinks({
+        root,
+        depth,
+        ...(includeDead ? { includeDead } : {}),
+        ...(groupByPara ? { groupByPara } : {}),
+        path: await workspace.uniqueCanvasPath(stem),
+        by: "human",
+      });
+      return { path: result.path, concepts: result.concepts, edges: result.edges, truncated: result.truncated };
+    },
+
+    async newCanvas({ name }) {
+      const stem = (name ?? "").trim().replace(/\.canvas$/i, "").replace(/[\\/:*?"<>|]+/g, "-");
+      const path = await workspace.uniqueCanvasPath(stem || "新しいキャンバス");
+      await workspace.canvasWrite(path, '{\n\t"nodes":[],\n\t"edges":[]\n}', { by: "human" });
+      return { path };
+    },
     rebuildRag: () => workspace.rebuildRag(),
 
     checkConformance: () => workspace.conformanceIssues(),

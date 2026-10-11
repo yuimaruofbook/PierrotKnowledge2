@@ -71,13 +71,15 @@ export interface ConceptFrontmatter {
   [key: string]: unknown;
 }
 
-/** A link found in a concept body. */
+/** A link found in a concept body, or a typed relation from its frontmatter. */
 export interface ConceptLink {
   /** Raw target as written in the source. */
   target: string;
   /** Display text, when the syntax carries one. */
   label?: string;
-  kind: "wikilink" | "markdown";
+  kind: "wikilink" | "markdown" | "relation";
+  /** The relation kind, for a link declared in the frontmatter `relations`. */
+  relation?: string;
   /** Resolved concept id, or null when the target is external/unresolvable. */
   resolved: string | null;
 }

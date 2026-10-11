@@ -88,8 +88,9 @@ pub fn check_conformance(bundle_rel_path: &str, raw: &str) -> ConformanceResult 
         };
     }
 
-    // A `.base` file is YAML for a view over the concepts, not a concept itself.
-    if basename.ends_with(".base") {
+    // A `.base` file is YAML for a view over the concepts, a `.canvas` file is
+    // JSON for a diagram: neither is a concept.
+    if basename.ends_with(".base") || basename.ends_with(".canvas") {
         return ConformanceResult {
             ok: true,
             errors: vec![],

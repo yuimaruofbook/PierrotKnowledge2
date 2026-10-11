@@ -11,7 +11,7 @@
 import { isAbsolute, relative, resolve, sep } from "path";
 import { messages } from "../../shared/messages";
 import { DAILY_DIR } from "../../shared/okf/daily";
-import { HUMAN_FILE, MAP_FILE, TASK_FILE } from "../../shared/okf/workspace-files";
+import { HUMAN_FILE, MAP_FILE, SYSTEMMAP_FILE, TASK_FILE } from "../../shared/okf/workspace-files";
 import type { Layer } from "../../shared/types";
 
 export const RAW_DIR = "raw";
@@ -186,6 +186,11 @@ export class BundlePaths {
    */
   get mapMdPath(): string {
     return resolve(this.root, MAP_FILE);
+  }
+
+  /** What the system is made of and how to extend it; see `shared/okf/systemmap.ts`. */
+  get systemMapMdPath(): string {
+    return resolve(this.root, SYSTEMMAP_FILE);
   }
 
   /** What the agent should know about the person it works for. */

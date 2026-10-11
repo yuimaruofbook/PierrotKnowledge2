@@ -89,8 +89,9 @@ export function checkConformance(bundleRelPath: string, raw: string): Conformanc
     return { ok: true, errors: [] };
   }
 
-  // A `.base` file is YAML for a view over the concepts, not a concept itself.
-  if (basename.endsWith(".base")) return { ok: true, errors: [] };
+  // A `.base` file is YAML for a view over the concepts, a `.canvas` file is
+  // JSON for a diagram: neither is a concept.
+  if (basename.endsWith(".base") || basename.endsWith(".canvas")) return { ok: true, errors: [] };
 
   if (isReservedFilename(basenameOf(path))) {
     if (yaml === null) return { ok: true, errors: [] };

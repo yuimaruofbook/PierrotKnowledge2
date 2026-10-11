@@ -298,6 +298,62 @@ const BASE_STEPS: Step[] = [
   onBundle("--help"),
 ];
 
+const NOTE_LINKED_A = "---\ntype: Concept\ntitle: Apple\nrelations:\n  depends_on: [items/b]\n---\n\n# Apple\n\n[[b]] と [[nowhere]]\n";
+const NOTE_ODD = "---\ntype: Gizmo\ntitle: Odd\nrelations:\n  teleports: [items/a]\n---\n\n# Odd\n";
+const CANVAS_TEXT =
+  '{"nodes":[{"id":"a","type":"text","text":"こんにちは","x":0,"y":0,"width":200,"height":60},{"id":"f","type":"file","file":"wiki/items/a.md","x":300,"y":0,"width":200,"height":60}],"edges":[{"id":"e","fromNode":"a","toNode":"f","label":"see"}],"extra":{"keep":true}}';
+
+/** Canvases, the graph schema and SYSTEMMAP.md, as the CLI exposes them. */
+const CANVAS_STEPS: Step[] = [
+  onBundle("write-file", "wiki/items/a.md", "--content", NOTE_LINKED_A),
+  onBundle("write-file", "wiki/items/b.md", "--content", NOTE_ITEM_B),
+  onBundle("rebuild-rag"),
+  onBundle("canvas-list"),
+  onBundle("canvas-from-links", "wiki/graph/canvases/a.canvas", "--root", "items/a", "--depth", "2", "--actor", "process:parity"),
+  onBundle("canvas-from-links", "b.canvas", "--root", "items/b", "--include_dead", "--group_by_para"),
+  onBundle("canvas-from-links", "--path", "q.canvas", "--query", "Apple", "--depth", "0"),
+  onBundle("canvas-from-links", "x.canvas"),
+  onBundle("canvas-from-links", "x.canvas", "--root", "items/a", "--depth", "9"),
+  onBundle("canvas-from-links", "x.canvas", "--root", "items/a", "--depth", "abc"),
+  onBundle("canvas-from-links", "x.canvas", "--root", "nope"),
+  onBundle("canvas-from-links", "x.json", "--root", "items/a"),
+  onBundle("canvas-from-links"),
+  onBundle("read-file", "wiki/graph/canvases/a.canvas"),
+  onBundle("canvas-write", "wiki/graph/canvases/c.canvas", "--content", CANVAS_TEXT, "--actor", "process:parity"),
+  onBundle("canvas-write", "--path", "wiki/graph/canvases/bad.canvas", "--content", '{"nodes":[{"id":"a"}]}'),
+  onBundle("canvas-write", "wiki/graph/canvases/bad.canvas"),
+  onBundle("canvas-write", "raw/x.canvas", "--content", "{}"),
+  onBundle("canvas-write"),
+  onBundle("canvas-read", "wiki/graph/canvases/c.canvas"),
+  onBundle("canvas-read", "--path", "wiki/graph/canvases/c.canvas", "--json"),
+  onBundle("canvas-read", "wiki/graph/canvases/nope.canvas"),
+  onBundle("canvas-read", "wiki/alpha.md"),
+  onBundle("canvas-read"),
+  onBundle("canvas-list"),
+  onBundle("canvas-list", "--json"),
+  onBundle("graph-schema"),
+  onBundle("graph-schema", "--json"),
+  onBundle("check-conformance"),
+  onBundle("write-file", "wiki/items/odd.md", "--content", NOTE_ODD),
+  onBundle("check-conformance"),
+  onBundle("check-conformance", "--json"),
+  onBundle("lint"),
+  onBundle("unresolved-links"),
+  onBundle("system-map"),
+  onBundle("system-map", "--refresh"),
+  onBundle("system-map", "--refresh", "--actor", "process:parity"),
+  onBundle("system-map", "--json"),
+  onBundle("read-file", "SYSTEMMAP.md"),
+  onBundle("map"),
+  onBundle("canvas-from-links", "--help"),
+  onBundle("canvas-write", "--help"),
+  onBundle("canvas-read", "--help"),
+  onBundle("canvas-list", "--help"),
+  onBundle("graph-schema", "--help"),
+  onBundle("system-map", "--help"),
+  onBundle("--help"),
+];
+
 const CONFIG_STEPS: Step[] = [
   ...["json", "toml", "opencode", "yaml", "command"].map((format) => onBundle("mcp-config", "--format", format)),
   onBundle("mcp-config"),
@@ -486,6 +542,10 @@ describe.skipIf(!ready)("Rust okf CLI parity", () => {
 
   test("base commands", async () => {
     expect(await compare(BASE_STEPS)).toBeGreaterThan(15);
+  }, 300_000);
+
+  test("canvas, graph-schema and system-map commands", async () => {
+    expect(await compare(CANVAS_STEPS)).toBeGreaterThan(30);
   }, 300_000);
 
   test("mcp-config in every format", async () => {

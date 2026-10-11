@@ -39,7 +39,7 @@ fn schema_keys(name: &str) -> Vec<String> {
 
 #[test]
 fn the_new_tools_are_listed_with_their_schemas() {
-    assert_eq!(TOOLS.len(), 48);
+    assert_eq!(TOOLS.len(), 54);
     let required = |name: &str| TOOLS.iter().find(|t| t["name"] == name).unwrap()["inputSchema"]["required"].clone();
     assert_eq!(required("set_lifecycle"), json!(["path", "lifecycle"]));
     assert_eq!(schema_keys("set_lifecycle"), ["path", "lifecycle", "actor"]);

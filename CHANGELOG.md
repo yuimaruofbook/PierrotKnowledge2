@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.8.0
+
+### Canvases, typed relations, the graph schema and SYSTEMMAP.md
+
+Six more MCP tools (54 now), in the Bun and the Rust build, byte for byte the
+same; plus an interactive canvas in the interface (Bun build only).
+
+- **Canvases (`.canvas`, JSON Canvas 1.0).** `canvas_list`, `canvas_read { path }`
+  (structured JSON plus a text outline: nodes by group, file nodes resolved to
+  the concept's title and description, edges with their labels),
+  `canvas_write { path, content, actor? }` (validated, bounded to 1 MiB, 2000
+  nodes, 5000 edges and 32 levels of nesting; saved exactly as given, so unknown
+  keys and node/edge order survive a round trip with Obsidian; `.canvas` only
+  under `wiki/`, never in a hidden folder) and
+  `canvas_from_links { root?, query?, depth?, include_dead?, para_depth?, group_by_para?, path, overwrite?, actor? }`,
+  which draws the neighbourhood of a concept (or of a query's top 5 hits)
+  following links and typed relations in both directions. The layout is plain
+  integer arithmetic (a column per link distance, rows ordered by path), so the
+  same graph gives the same file in both builds. Plain links are unlabeled,
+  relations carry their kind; roots are green, DEAD concepts red.
+- **Typed relations and `wiki/graph/schema.md`.** A concept may declare
+  `relations: { kind: [path or [[link]], ...] }`; they count as links
+  (backlinks, `unresolved_links`, `link_depth`) and say their kind. A `GraphSchema`
+  concept declares `types` and `kinds` (name, description, optional `from` / `to`
+  types); `graph_schema` returns it parsed, with undeclared types and kinds as
+  `warnings` (never errors), only when a schema exists. `check_conformance`
+  keeps its original answer. New bundles get `wiki/graph/` with a starter schema.
+- **SYSTEMMAP.md** beside MAP.md: layers, folders, tool groups, where everything
+  lives and how to extend it, with an auto-generated section between
+  `<!-- okf:systemmap:start -->` and `<!-- okf:systemmap:end -->`.
+  `system_map { refresh?, actor? }` reads it, or regenerates only that section
+  (text outside the markers is never touched). Existing bundles get the file on
+  the first refresh. MAP.md and AGENTS.md point to it.
+- **Interface.** A `.canvas` file opens as an interactive canvas: pan, zoom,
+  select, drag, resize, add text and file nodes, connect, delete, undo, edit
+  text and labels, colours, and a raw "JSON を編集" toggle. "関係図を作る" (command
+  palette, the canvas toolbar, a concept's context menu) picks a concept and a
+  depth and opens the generated canvas.
+- `move_file` / `set_para` follow typed relations: an entry that named the moved
+  file (path or `[[link]]`, list or single value) is edited in place in the
+  frontmatter text, keeping its form, and the moved file's own relative entries
+  are rebased. An entry in a shape that cannot be edited safely (multi-line flow
+  list, anchor, ...) is left alone and listed in the answer as dangling.
+- Safety: `system_map { refresh }` rewrites only when the file holds exactly one
+  start marker followed by one end marker (or none); any other mix is refused
+  with the marker to restore, and a read error other than "not found" aborts
+  instead of overwriting. Generated text cannot spell a marker. `canvas_from_links`
+  refuses to replace an existing canvas unless `overwrite: true`, and cuts a
+  dense neighbourhood at 5000 edges (flagged as truncated) instead of failing.
+
 ## 0.7.1
 
 ### The prebuilt Rust binary is actually used on Windows

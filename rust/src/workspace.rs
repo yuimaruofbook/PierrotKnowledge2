@@ -9,10 +9,10 @@
 //! which the server calls between requests.
 
 use crate::okf::bundle::{
-    Bundle, DeleteOptions, DeleteResult, MoveOptions, MoveResult, PromoteOptions, PromoteResult,
+    Bundle, DanglingRelation, DeleteOptions, DeleteResult, MoveOptions, MoveResult, PromoteOptions, PromoteResult,
     UnresolvedLink, WriteOptions,
 };
-use crate::okf::error::{OkfError, Result};
+use crate::okf::error::{self, OkfError, Result};
 use crate::okf::loops::{EndOptions, LoopEndResult, LoopSpace, LoopStartResult, StartOptions};
 use crate::okf::nodepath;
 use crate::okf::parser::{
@@ -36,6 +36,17 @@ use crate::shared::okf::base::{
     is_base_path, list_views, render_base_markdown, run_base, validate_base, BaseResult, RunOptions, BASE_EXT,
 };
 use crate::shared::okf::base_expr::BaseRow;
+use crate::shared::okf::canvas::{
+    canvas_outline, describe_canvas_errors, is_canvas_path, js_numbers, parse_canvas, ResolvedFile, CANVAS_EXT,
+    MAX_CANVAS_BYTES,
+};
+use crate::shared::okf::canvas_graph::{build_graph_canvas, serialize_canvas, GraphConcept, GraphLink, GraphOptions};
+use crate::shared::okf::graph_schema::{
+    parse_graph_schema, schema_warnings, GraphSchema, CANVASES_DIR, GRAPH_SCHEMA_ID, GRAPH_SCHEMA_TYPE,
+};
+use crate::shared::okf::systemmap::{
+    render_system_map, BaseFact, CanvasFact, KindFact, SchemaFact, SystemMapFacts,
+};
 use crate::shared::okf::concept::{concept_id_from_rel_path, concept_title, is_concept_path};
 use crate::shared::okf::frontmatter::split_frontmatter;
 use crate::shared::okf::knowhow::{
@@ -49,7 +60,7 @@ use crate::shared::okf::daily::{
 };
 use crate::shared::okf::links::resolve_link_target;
 use crate::shared::okf::loop_::LoopSnapshot;
-use crate::shared::okf::para::{reclassify, within_para_depth, ParaClass};
+use crate::shared::okf::para::{para_of, reclassify, within_para_depth, ParaClass, PARA_ORDER};
 use crate::shared::okf::reserved::{iso_date_of, parse_log_entries, ParsedLogEntry};
 use crate::shared::okf::skill_rank::{rank_skills, selection_confidence, Confidence, Rankable};
 use crate::shared::okf::workspace_files::{
@@ -72,6 +83,83 @@ use std::time::{Duration, Instant};
 /// Long enough to outlast the OS event, short enough that a genuine external
 /// edit moments later is still seen.
 const SELF_WRITE_GRACE: Duration = Duration::from_millis(750);
+
+/// How many search hits a `canvas_from_links` query starts from.
+const QUERY_ROOTS: i64 = 5;
+
+/// What `canvas_from_links` is asked for.
+#[derive(Debug, Clone, Default)]
+pub struct CanvasFromLinks {
+    pub root: Option<String>,
+    pub query: Option<String>,
+    pub depth: Option<i64>,
+    pub include_dead: bool,
+    pub para_depth: Option<i64>,
+    pub group_by_para: bool,
+    /// Replace a canvas already at `path`. Off by default: a hand-made canvas must not be lost to a redraw.
+    pub overwrite: bool,
+    pub path: String,
+    pub by: Actor,
+    pub actor: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CanvasFromLinksResult {
+    pub path: String,
+    pub concepts: usize,
+    pub edges: usize,
+    pub truncated: bool,
+    pub outline: String,
+}
+
+/// What a file node's `file` names, when it is a concept.
+///
+/// Canvas paths are relative to the bundle root, as every path here is, so the
+/// wiki folder prefix is dropped; a path already relative to the wiki layer
+/// works too.
+fn canvas_file_resolver(bundle: &Bundle) -> impl Fn(&str) -> Option<ResolvedFile> + '_ {
+    move |file| {
+        let path = file.replace('\\', "/");
+        let path = path.trim_start_matches('/');
+        if !path.to_lowercase().ends_with(".md") {
+            return None;
+        }
+        let wiki_dir = bundle.paths.wiki_dir.as_str();
+        let prefix = format!("{wiki_dir}/");
+        let mut candidates: Vec<&str> = Vec::new();
+        if !wiki_dir.is_empty() && path.starts_with(&prefix) {
+            candidates.push(&path[prefix.len()..]);
+        }
+        candidates.push(path);
+        for candidate in candidates {
+            let Some(doc) = bundle.get_concept(&concept_id_from_rel_path(candidate)) else { continue };
+            let description = match doc.frontmatter.description.as_deref() {
+                Some(d) if !js_trim(d).is_empty() => Some(js_trim(d).to_string()),
+                _ => None,
+            };
+            return Some(ResolvedFile { title: concept_title(&doc.id, &doc.frontmatter), description });
+        }
+        None
+    }
+}
+
+/// A concept id for what the caller typed: an id, a bundle-relative path, or a bare name.
+fn resolve_root_concept(bundle: &Bundle, raw: &str) -> Option<String> {
+    let text = js_trim(raw).replace('\\', "/");
+    if text.is_empty() {
+        return None;
+    }
+    let wiki_dir = bundle.paths.wiki_dir.as_str();
+    let prefix = format!("{wiki_dir}/");
+    let stripped = if !wiki_dir.is_empty() && text.starts_with(&prefix) { &text[prefix.len()..] } else { text.as_str() };
+    for candidate in [stripped, text.as_str()] {
+        let id = concept_id_from_rel_path(candidate);
+        if bundle.get_concept(&id).is_some() {
+            return Some(id);
+        }
+    }
+    resolve_link_target(&text, "", Some(&bundle.concept_ids()))
+}
 
 /// Called with the bundle-relative paths that changed outside the app.
 pub type ExternalChangeHandler = Box<dyn FnMut(&[String], &BundleInfo)>;
@@ -242,6 +330,7 @@ pub struct SetParaResult {
     pub to: String,
     pub para: ParaClass,
     pub moved: bool,
+    pub dangling_relations: Vec<DanglingRelation>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -486,6 +575,7 @@ impl Workspace {
                 to: path.to_string(),
                 para: to,
                 moved: false,
+                dangling_relations: Vec::new(),
             });
         }
 
@@ -503,6 +593,7 @@ impl Workspace {
             to: result.moved,
             para: to,
             moved: true,
+            dangling_relations: result.dangling_relations,
         })
     }
 
@@ -989,6 +1080,404 @@ impl Workspace {
             &WriteOptions { by: Some(by), actor: actor.map(str::to_string), ..Default::default() },
         )?;
         Ok(found.warnings)
+    }
+
+    // ---- canvases and the graph schema ---------------------------------------------
+
+    /// Read and check one `.canvas` file: the text and the parsed value, or the
+    /// spec's problems. A missing file is an error; an invalid one is a value. A
+    /// file over the size limit is refused before it is read.
+    fn read_canvas_file(&mut self, path: &str) -> Result<std::result::Result<(String, Value), Vec<String>>> {
+        if !is_canvas_path(path) {
+            return Err(OkfError::message("'path' must end in .canvas"));
+        }
+        let bundle = self.require_bundle_mut()?;
+        let abs = bundle.paths.resolve(path)?; // a path outside the bundle fails here, with the usual message
+        let size = match error::stat(&abs) {
+            Ok(meta) => meta.len(),
+            Err(_) => return Err(OkfError::message(format!("{path} not found"))),
+        };
+        if size > MAX_CANVAS_BYTES as u64 {
+            return Ok(Err(vec![format!("the canvas is larger than {MAX_CANVAS_BYTES} bytes")]));
+        }
+        let text = match bundle.read_file(path) {
+            Ok(file) if file.binary != Some(true) => file.content,
+            _ => return Err(OkfError::message(format!("{path} not found"))),
+        };
+        Ok(parse_canvas(&text).map(|value| (text, value)))
+    }
+
+    /// Every `.canvas` file with its size, or why it cannot be read.
+    pub fn canvas_list(&mut self) -> Result<Vec<Value>> {
+        let mut paths: Vec<String> = Vec::new();
+        {
+            let bundle = self.require_bundle()?;
+            fn walk(nodes: &[FileNode], out: &mut Vec<String>) {
+                for node in nodes {
+                    match &node.children {
+                        Some(children) => walk(children, out),
+                        None => {
+                            if node.name.to_lowercase().ends_with(CANVAS_EXT) {
+                                out.push(node.path.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            walk(&bundle.list_dir(&bundle.paths.wiki_dir, true)?, &mut paths);
+        }
+        paths.sort();
+
+        let mut out = Vec::new();
+        for path in paths {
+            let Ok(file) = self.read_canvas_file(&path) else { continue };
+            let mut entry = serde_json::Map::new();
+            entry.insert("path".into(), Value::String(path));
+            match file {
+                Ok((_, value)) => {
+                    let count = |key: &str| value.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+                    entry.insert("nodes".into(), Value::from(count("nodes")));
+                    entry.insert("edges".into(), Value::from(count("edges")));
+                }
+                Err(errors) => {
+                    entry.insert("error".into(), Value::String(describe_canvas_errors(&errors)));
+                }
+            }
+            out.push(Value::Object(entry));
+        }
+        Ok(out)
+    }
+
+    /// One canvas as structured JSON plus the text outline an agent reads.
+    pub fn canvas_read(&mut self, path: &str) -> Result<Value> {
+        let (_, value) = self.read_canvas_file(path)?.map_err(|errors| {
+            OkfError::message(format!("Invalid canvas {path}: {}", describe_canvas_errors(&errors)))
+        })?;
+        let bundle = self.require_bundle()?;
+        let count = |key: &str| value.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+        let outline = canvas_outline(&value, &canvas_file_resolver(bundle), Some(path));
+        let mut out = serde_json::Map::new();
+        out.insert("path".into(), Value::String(path.to_string()));
+        out.insert("nodeCount".into(), Value::from(count("nodes")));
+        out.insert("edgeCount".into(), Value::from(count("edges")));
+        out.insert("canvas".into(), js_numbers(&value));
+        out.insert("outline".into(), Value::String(outline));
+        Ok(Value::Object(out))
+    }
+
+    /// Validate, then write exactly the text given: unknown keys, the order of
+    /// nodes and edges and the author's formatting survive because nothing is
+    /// re-serialised.
+    pub fn canvas_write(&mut self, path: &str, content: &str, by: Actor, actor: Option<&str>) -> Result<()> {
+        if !is_canvas_path(path) {
+            return Err(OkfError::message("'path' must end in .canvas"));
+        }
+        {
+            let bundle = self.require_bundle()?;
+            let abs = bundle.paths.resolve(path)?;
+            let rel = bundle.paths.to_rel(&abs);
+            if bundle.paths.layer_of(&rel) != Some(Layer::Wiki) {
+                return Err(OkfError::message(format!("A .canvas file must live under wiki/: {path}")));
+            }
+            // In a flat bundle the wiki layer is the whole folder, so the layer check alone
+            // would let a canvas into .okf/, .git/ or any other hidden place.
+            if rel.split('/').any(|segment| segment == ".." || segment.starts_with('.')) {
+                return Err(OkfError::message(format!("A .canvas file cannot live in a hidden folder: {path}")));
+            }
+        }
+        if let Err(errors) = parse_canvas(content) {
+            return Err(OkfError::message(format!(
+                "Invalid canvas, nothing written: {}",
+                describe_canvas_errors(&errors)
+            )));
+        }
+        self.write_file(
+            path,
+            content,
+            &WriteOptions { by: Some(by), actor: actor.map(str::to_string), ..Default::default() },
+        )?;
+        Ok(())
+    }
+
+    /// Draw the neighbourhood of a concept, or of what a query finds, as a
+    /// canvas and save it. The layout is deterministic (`canvas_graph.rs`).
+    pub fn canvas_from_links(&mut self, opts: &CanvasFromLinks) -> Result<CanvasFromLinksResult> {
+        let mut roots: Vec<String> = Vec::new();
+        if let Some(root) = opts.root.as_deref().filter(|r| !r.is_empty()) {
+            match resolve_root_concept(self.require_bundle()?, root) {
+                Some(id) => roots.push(id),
+                None => return Err(OkfError::message(format!("No concept matches root: {root}"))),
+            }
+        }
+        if let Some(query) = opts.query.as_deref().filter(|q| !q.is_empty()) {
+            let mut filters = SearchFilters::default();
+            if opts.include_dead {
+                filters.include_dead = Some(true);
+            }
+            filters.para_depth = opts.para_depth;
+            let hits = self.search(query, &SearchOptions { filters, limit: Some(QUERY_ROOTS), ..Default::default() })?;
+            if hits.is_empty() && roots.is_empty() {
+                return Err(OkfError::message(format!("No concept matches the query: {query}")));
+            }
+            roots.extend(hits.into_iter().map(|h| h.id));
+        }
+
+        let (target, concepts) = {
+            let bundle = self.require_bundle()?;
+            // A bare file name goes in the default folder; anything with a folder is taken as written.
+            let target = if opts.path.contains('/') || opts.path.contains('\\') {
+                opts.path.clone()
+            } else {
+                let prefix = if bundle.paths.wiki_dir.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/", bundle.paths.wiki_dir)
+                };
+                format!("{prefix}{CANVASES_DIR}/{}", opts.path)
+            };
+            let concepts: Vec<GraphConcept> = bundle
+                .all_concepts()
+                .into_iter()
+                .map(|doc| GraphConcept {
+                    id: doc.id.clone(),
+                    path: doc.rel_path.clone(),
+                    dead: lifecycle_of(&tags_of(doc)) == LifecycleChoice::Set(Lifecycle::Dead),
+                    links: doc
+                        .links
+                        .iter()
+                        .map(|l| GraphLink { resolved: l.resolved.clone(), relation: l.relation.clone() })
+                        .collect(),
+                })
+                .collect();
+            (target, concepts)
+        };
+
+        let result = build_graph_canvas(
+            &concepts,
+            &GraphOptions {
+                roots,
+                depth: opts.depth.unwrap_or(1),
+                include_dead: opts.include_dead,
+                para_depth: opts.para_depth,
+                group_by_para: opts.group_by_para,
+            },
+        );
+        if !opts.overwrite && self.require_bundle()?.exists(&target)? {
+            return Err(OkfError::message(format!("{target} already exists; pass overwrite: true to replace it")));
+        }
+        self.canvas_write(&target, &serialize_canvas(&result.canvas), opts.by, opts.actor.as_deref())?;
+        let outline = canvas_outline(&result.canvas, &canvas_file_resolver(self.require_bundle()?), Some(&target));
+        Ok(CanvasFromLinksResult {
+            path: target,
+            concepts: result.concepts,
+            edges: result.edges,
+            truncated: result.truncated,
+            outline,
+        })
+    }
+
+    /// The schema concept, parsed, with its type, or `None` when the bundle has none.
+    fn load_graph_schema(&self) -> Result<Option<(GraphSchema, String)>> {
+        Ok(self
+            .require_bundle()?
+            .get_concept(GRAPH_SCHEMA_ID)
+            .map(|doc| (parse_graph_schema(&doc.frontmatter.extra), doc.frontmatter.r#type.clone())))
+    }
+
+    /// `graph_schema`: the declared concept types and relation kinds.
+    pub fn graph_schema(&self) -> Result<Value> {
+        let path = self.require_bundle()?.paths.rel_path_of_id(GRAPH_SCHEMA_ID);
+        let mut out = serde_json::Map::new();
+        out.insert("path".into(), Value::String(path));
+        let Some((schema, ty)) = self.load_graph_schema()? else {
+            out.insert("exists".into(), Value::Bool(false));
+            out.insert("types".into(), Value::Array(Vec::new()));
+            out.insert("kinds".into(), Value::Array(Vec::new()));
+            return Ok(Value::Object(out));
+        };
+        let mut problems = schema.problems.clone();
+        if ty != GRAPH_SCHEMA_TYPE {
+            problems.insert(0, format!("the schema concept's type should be {GRAPH_SCHEMA_TYPE}"));
+        }
+        let strings = |list: &Vec<String>| Value::Array(list.iter().cloned().map(Value::String).collect());
+        let types: Vec<Value> = schema
+            .types
+            .iter()
+            .flatten()
+            .map(|t| {
+                let mut m = serde_json::Map::new();
+                m.insert("name".into(), Value::String(t.name.clone()));
+                if let Some(d) = &t.description {
+                    m.insert("description".into(), Value::String(d.clone()));
+                }
+                Value::Object(m)
+            })
+            .collect();
+        let kinds: Vec<Value> = schema
+            .kinds
+            .iter()
+            .flatten()
+            .map(|k| {
+                let mut m = serde_json::Map::new();
+                m.insert("name".into(), Value::String(k.name.clone()));
+                if let Some(d) = &k.description {
+                    m.insert("description".into(), Value::String(d.clone()));
+                }
+                if let Some(from) = &k.from {
+                    m.insert("from".into(), strings(from));
+                }
+                if let Some(to) = &k.to {
+                    m.insert("to".into(), strings(to));
+                }
+                Value::Object(m)
+            })
+            .collect();
+        out.insert("exists".into(), Value::Bool(true));
+        out.insert("types".into(), Value::Array(types));
+        out.insert("kinds".into(), Value::Array(kinds));
+        if !problems.is_empty() {
+            out.insert("problems".into(), strings(&problems));
+        }
+        Ok(Value::Object(out))
+    }
+
+    /// Concept types and relation kinds outside the schema, per concept. Empty
+    /// when there is no schema, so a bundle that never made one sees nothing.
+    pub fn schema_warnings(&self) -> Result<Vec<(String, Vec<String>)>> {
+        let bundle = self.require_bundle()?;
+        let Some((schema, _)) = self.load_graph_schema()? else {
+            return Ok(Vec::new());
+        };
+        Ok(schema_warnings(&schema, &bundle.all_concepts(), &bundle.paths.wiki_dir))
+    }
+
+    // ---- SYSTEMMAP.md -----------------------------------------------------------------
+
+    fn system_map_facts(&mut self, tool_count: usize) -> Result<SystemMapFacts> {
+        let (concepts, dead, knowhow, para, types) = {
+            let bundle = self.require_bundle()?;
+            let docs = bundle.all_concepts();
+            let mut para = [0usize; 4];
+            let mut types: IndexMap<String, usize> = IndexMap::new();
+            let (mut dead, mut knowhow) = (0usize, 0usize);
+            let knowhow_prefix = format!("{KNOWHOW_DIR}/");
+            for doc in &docs {
+                let class = para_of(&doc.id);
+                para[PARA_ORDER.iter().position(|c| *c == class).unwrap_or(0)] += 1;
+                *types.entry(doc.frontmatter.r#type.clone()).or_insert(0) += 1;
+                if lifecycle_of(&tags_of(doc)) == LifecycleChoice::Set(Lifecycle::Dead) {
+                    dead += 1;
+                }
+                if doc.id.starts_with(&knowhow_prefix) {
+                    knowhow += 1;
+                }
+            }
+            let mut types: Vec<(String, usize)> = types.into_iter().collect();
+            types.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            (docs.len(), dead, knowhow, para, types)
+        };
+
+        let mut loops: Vec<(String, String)> = Vec::new();
+        {
+            let space = self.require_loops()?;
+            let mut names = space.list();
+            names.sort();
+            for name in names {
+                if let Ok(design) = space.read(&name) {
+                    loops.push((design.name, design.goal));
+                }
+            }
+        }
+
+        let schema = self.load_graph_schema()?.map(|(schema, _)| SchemaFact {
+            types: schema.types.map(|t| t.into_iter().map(|t| t.name).collect()),
+            kinds: schema.kinds.map(|k| {
+                k.into_iter().map(|k| KindFact { name: k.name, from: k.from, to: k.to }).collect()
+            }),
+        });
+
+        let bases = self
+            .base_list()?
+            .iter()
+            .map(|b| BaseFact {
+                path: b["path"].as_str().unwrap_or("").to_string(),
+                views: b["views"]
+                    .as_array()
+                    .map(|v| v.iter().filter_map(|v| v["name"].as_str().map(str::to_string)).collect())
+                    .unwrap_or_default(),
+                error: b.get("error").and_then(Value::as_str).map(str::to_string),
+            })
+            .collect();
+        let canvases = self
+            .canvas_list()?
+            .iter()
+            .map(|c| CanvasFact {
+                path: c["path"].as_str().unwrap_or("").to_string(),
+                nodes: c["nodes"].as_u64().unwrap_or(0) as usize,
+                edges: c["edges"].as_u64().unwrap_or(0) as usize,
+                error: c.get("error").and_then(Value::as_str).map(str::to_string),
+            })
+            .collect();
+        let mut skills: Vec<(String, String)> =
+            self.require_skills_mut()?.summaries().into_iter().map(|s| (s.name, s.description)).collect();
+        skills.sort_by(|a, b| a.0.cmp(&b.0));
+
+        Ok(SystemMapFacts {
+            concepts,
+            dead,
+            knowhow,
+            tool_count,
+            para,
+            types,
+            bases,
+            canvases,
+            skills,
+            loops,
+            schema,
+        })
+    }
+
+    /// SYSTEMMAP.md, as it is on disk. With `refresh`, the section between the
+    /// markers is regenerated from the bundle and written; the text around it is
+    /// not touched. A bundle that has none gets the file on the first refresh.
+    pub fn system_map(&mut self, refresh: bool, actor: Option<&str>, tool_count: usize) -> Result<String> {
+        let (path, previous) = {
+            let bundle = self.require_bundle()?;
+            let abs = bundle.paths.system_map_md_path();
+            let previous = match error::read_text(&abs) {
+                Ok(text) => Some(text),
+                // Only "not there" means absent; anything else must not be
+                // mistaken for a missing file, or the refresh would overwrite it.
+                Err(e) if e.code == "ENOENT" => None,
+                Err(e) => return Err(e.into()),
+            };
+            (bundle.paths.to_rel(&abs), previous)
+        };
+        if !refresh {
+            return match previous {
+                Some(text) => Ok(text),
+                None => {
+                    let facts = self.system_map_facts(tool_count)?;
+                    render_system_map(None, Some(&facts)).map_err(OkfError::message)
+                }
+            };
+        }
+
+        let facts = self.system_map_facts(tool_count)?;
+        let next = render_system_map(previous.as_deref(), Some(&facts)).map_err(OkfError::message)?;
+        if previous.as_deref() != Some(next.as_str()) {
+            self.write_file(
+                &path,
+                &next,
+                &WriteOptions {
+                    by: Some(Actor::Agent),
+                    actor: Some(actor.filter(|a| !a.is_empty()).unwrap_or("process:mcp").to_string()),
+                    action: Some(if previous.is_none() { "create" } else { "write" }.to_string()),
+                    ..Default::default()
+                },
+            )?;
+        }
+        Ok(next)
     }
 
     pub fn tags(&self) -> Result<Vec<TagCount>> {

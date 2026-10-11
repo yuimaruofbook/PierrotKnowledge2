@@ -525,7 +525,7 @@ fn the_bundle_root_holds_exactly_the_three_layers_plus_the_orientation_files() {
     assert_eq!(dirs, vec![".rag", "raw", "wiki"]);
     let mut files: Vec<&String> = entries.iter().filter(|e| e.ends_with(".md")).collect();
     files.sort();
-    assert_eq!(files, vec!["MAP.md", "Task.md", "human.md"]);
+    assert_eq!(files, vec!["MAP.md", "SYSTEMMAP.md", "Task.md", "human.md"]);
 }
 
 #[test]

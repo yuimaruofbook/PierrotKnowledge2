@@ -17,12 +17,14 @@ use std::sync::LazyLock;
 pub const MAP_FILE: &str = "MAP.md";
 pub const HUMAN_FILE: &str = "human.md";
 pub const TASK_FILE: &str = "Task.md";
+/// Beside MAP.md and reserved like it; see `systemmap.rs`.
+pub const SYSTEMMAP_FILE: &str = "SYSTEMMAP.md";
 
 /// Lowercase basenames of the wiki-layer files that are not concepts.
 ///
 /// Kept apart from OKF's reserved set on purpose: OKF §3 reserves exactly
 /// `index.md` and `log.md`.
-pub const WORKSPACE_FILENAMES: [&str; 3] = ["map.md", "human.md", "task.md"];
+pub const WORKSPACE_FILENAMES: [&str; 4] = ["map.md", "human.md", "task.md", "systemmap.md"];
 
 pub fn is_workspace_filename(name: &str) -> bool {
     WORKSPACE_FILENAMES.contains(&name.to_lowercase().as_str())
@@ -350,7 +352,7 @@ pub struct MapEntry {
 /// The routing table, as data. The single source of truth for MAP.md's
 /// generated half, so the file cannot describe a layout the code does not
 /// implement.
-pub const MAP_ENTRIES: [MapEntry; 9] = [
+pub const MAP_ENTRIES: [MapEntry; 11] = [
     MapEntry {
         question: "利用者のこと（呼び方・進め方・制約）",
         r#where: HUMAN_FILE,
@@ -385,6 +387,18 @@ pub const MAP_ENTRIES: [MapEntry; 9] = [
         question: "繰り返す作業の設計",
         r#where: "wiki/loops/",
         tool: "loop_list",
+        writable: "人間 / エージェント",
+    },
+    MapEntry {
+        question: "システムの全体像・拡張のしかた",
+        r#where: SYSTEMMAP_FILE,
+        tool: "system_map",
+        writable: "人間 / エージェント",
+    },
+    MapEntry {
+        question: "概念の関係図・型付き関係・グラフスキーマ",
+        r#where: "wiki/graph/",
+        tool: "canvas_list / graph_schema",
         writable: "人間 / エージェント",
     },
     MapEntry {
