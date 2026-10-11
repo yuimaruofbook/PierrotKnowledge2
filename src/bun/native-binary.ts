@@ -75,18 +75,25 @@ async function releaseAssets(source: GithubSource, version: string): Promise<Nat
  * distribution has fails only when spawned, and here that would be every
  * agent host's spawn. The server exits 0 on end of input; the CLI on `help` (`--help` exits 2).
  */
-function startsHere(path: string, bin: string): boolean {
-  try {
-    const result = Bun.spawnSync([path, ...(bin === "okf" ? ["help"] : [])], {
-      stdin: "ignore",
-      stdout: "ignore",
-      stderr: "ignore",
-      env: { ...process.env, OKF_BUNDLE: "" },
-      timeout: 10_000,
-    });
-    return result.exitCode === 0;
-  } catch {
-    return false;
+async function startsHere(path: string, bin: string): Promise<boolean> {
+  // Windows Defender holds a freshly written executable while it scans it:
+  // spawning in the first half second fails with EBUSY even though our own
+  // handle is closed. That is "not yet", not "cannot run", so wait it out.
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    try {
+      const result = Bun.spawnSync([path, ...(bin === "okf" ? ["help"] : [])], {
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        env: { ...process.env, OKF_BUNDLE: "" },
+        timeout: 10_000,
+      });
+      return result.exitCode === 0;
+    } catch (cause) {
+      if (!/EBUSY/.test(String(cause)) || Date.now() > deadline) return false;
+      await Bun.sleep(100);
+    }
   }
 }
 
@@ -116,7 +123,7 @@ export async function downloadNativeBinary(options: {
       return { ok: false, reason: `${name} のハッシュが一致しません（破損または改ざんの可能性）` };
     }
     if (process.platform !== "win32") await chmod(options.to, 0o755);
-    if (!startsHere(options.to, options.bin)) {
+    if (!(await startsHere(options.to, options.bin))) {
       await rm(options.to, { force: true });
       return { ok: false, reason: `${name} がこのマシンで起動しません` };
     }

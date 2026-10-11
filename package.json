@@ -1,6 +1,6 @@
 {
   "name": "okf-wiki",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Ultra-lightweight OKF v0.2 knowledge base following the LLM Wiki pattern. Bun + Vite + TypeScript, served to your own browser.",
   "license": "MIT",
   "type": "module",

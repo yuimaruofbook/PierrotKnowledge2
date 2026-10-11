@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.1
+
+### The prebuilt Rust binary is actually used on Windows
+
+0.7.0 attached the Rust builds to its release, but on Windows setup without
+`cargo` still fell back to the 94 MB Bun build, for two reasons that only show
+on a real download:
+
+- The download was saved as `okf.exe.download`, and Windows will not start a
+  file that does not end in `.exe` — so the start-up check failed every time.
+  It is now `okf.download.exe`.
+- Windows Defender holds a freshly written executable for about half a second
+  while it scans it, and starting it in that window fails with `EBUSY`. The
+  check now waits that out (up to five seconds) instead of reading it as
+  "cannot run here".
+
+Verified end to end against the V0.7.0 assets with `cargo` removed from `PATH`:
+both binaries download, match GitHub's SHA-256, start, and are installed.
+
 ## 0.7.0
 
 ### Lifecycle, context range, activity summaries and know-how

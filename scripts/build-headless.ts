@@ -119,7 +119,9 @@ function buildRust(): string | null {
  */
 async function downloadRust(): Promise<string | null> {
   const { version } = (await Bun.file(join(root, "package.json")).json()) as { version: string };
-  const to = `${outFile}.download`;
+  // Ends in the platform's executable suffix: Windows will not start a file
+  // named `okf.exe.download`, and the downloader test-starts it before use.
+  const to = join(target.dir, `${target.rustBin}.download${exe}`);
   const result = await downloadNativeBinary({ bin: target.rustBin, version, to });
   if (result.ok) return to;
   console.log(`  ビルド済みの Rust 版は使えません（${result.reason}）。Bun 版をビルドします。`);
@@ -189,7 +191,7 @@ if (built) {
     // macOS does not refuse to overwrite a running binary the way Windows
     // does, and rewriting a signed Mach-O under a live process gets the next
     // spawn killed for a code signature that no longer matches.
-    const staged = built.endsWith(".download") ? built : `${outFile}.new`;
+    const staged = built.endsWith(`.download${exe}`) ? built : `${outFile}.new`;
     if (staged !== built) await copyFile(built, staged);
     await rename(staged, outFile);
   } catch (cause) {
