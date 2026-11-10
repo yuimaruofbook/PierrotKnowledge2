@@ -16,9 +16,11 @@ import { errorMessage } from "../shared/errors";
 /** The platforms the workflow builds, by the names its assets use. */
 const PLATFORMS: Record<string, string> = {
   "win32-x64": "windows-x64",
+  "win32-arm64": "windows-arm64",
   "darwin-arm64": "macos-arm64",
   "darwin-x64": "macos-x64",
   "linux-x64": "linux-x64",
+  "linux-arm64": "linux-arm64",
 };
 
 export function nativePlatform(platform: string, arch: string): string | null {

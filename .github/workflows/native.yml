@@ -1,23 +1,28 @@
-# Build the Rust headless server and CLI for each platform.
+# Build the Rust CLI (which is the whole application) for each platform.
 #
 # On every push and pull request that touches rust/, the crate's tests run on
-# all three operating systems: the port was developed on Windows, and a path or
+# every operating system: the port was developed on Windows, and a path or
 # locale assumption that only holds there would otherwise surface on a user's
 # Mac.
 #
-# When a release is published, the binaries are attached to it. Setup on a
-# machine without a Rust toolchain downloads the one for its platform
-# (src/bun/native-binary.ts) and verifies it against the digest GitHub records,
-# so asset names here are a contract with nativeAssetName() there.
+# When a release is published, the binaries are attached to it. `okf` carries
+# the built page and the icon inside it (rust/src/build.rs), so the one-line
+# installers (install.ps1, install.sh) download that single file, verify it
+# against the digest GitHub records, and are done. `okf-mcp` is still attached
+# for installs made from the source zip before `okf serve` replaced it; their
+# updater asks for it by name.
+#
+# Asset names are a contract with install.ps1, install.sh, scripts/setup.ps1,
+# scripts/setup.sh, rust/src/native_binary.rs and src/bun/native-binary.ts.
 
 name: native
 
 on:
   push:
     branches: [main]
-    paths: ["rust/**", "templates/**", ".github/workflows/native.yml"]
+    paths: ["rust/**", "templates/**", "src/mainview/**", ".github/workflows/native.yml"]
   pull_request:
-    paths: ["rust/**", "templates/**", ".github/workflows/native.yml"]
+    paths: ["rust/**", "templates/**", "src/mainview/**", ".github/workflows/native.yml"]
   release:
     types: [published]
   workflow_dispatch:
@@ -30,18 +35,42 @@ permissions:
   contents: write
 
 jobs:
+  # The page and the icon are the same bytes on every platform, and building
+  # them needs Bun, which not every runner below has a build of. Once, here.
+  view:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build:view
+      - run: bun run scripts/make-icon.ts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: view
+          # Two paths, so the artifact keeps them relative to the repository root.
+          path: |
+            src/mainview/dist
+            assets
+          if-no-files-found: error
+
   build:
+    needs: view
     strategy:
       fail-fast: false
       matrix:
         include:
           - { os: windows-latest, target: x86_64-pc-windows-msvc, platform: windows-x64, exe: ".exe", test: true }
+          - { os: windows-11-arm, target: aarch64-pc-windows-msvc, platform: windows-arm64, exe: ".exe", test: true }
           - { os: macos-latest, target: aarch64-apple-darwin, platform: macos-arm64, exe: "", test: true }
           - { os: macos-latest, target: x86_64-apple-darwin, platform: macos-x64, exe: "", test: false }
-          # 22.04, not latest: the binary links against the runner's glibc
-          # (2.35 here), and one built on 24.04 needs 2.39 — which Debian 12
-          # and Ubuntu 22.04 do not have.
-          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, platform: linux-x64, exe: "", test: true }
+          # musl, linked statically: one file that runs on any Linux, whatever
+          # its libc (a glibc build needs the builder's glibc or newer, and
+          # does not start on Alpine at all).
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-musl, platform: linux-x64, exe: "", test: true }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-musl, platform: linux-arm64, exe: "", test: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -50,9 +79,24 @@ jobs:
           # sources, not whatever main has become since.
           ref: ${{ inputs.tag || github.ref }}
 
+      # Before cargo: build.rs compiles whatever is here into the binary.
+      - uses: actions/download-artifact@v4
+        with:
+          name: view
+          path: .
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: musl toolchain
+        if: contains(matrix.target, 'musl')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          # SQLite and ring are C: point cc at the musl compiler for this target.
+          echo "CC_$(echo '${{ matrix.target }}' | tr '-' '_')=musl-gcc" >> "$GITHUB_ENV"
 
       - name: Test
         if: matrix.test

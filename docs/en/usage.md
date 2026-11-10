@@ -74,8 +74,8 @@ bun run build:cli       # single-file `okf` executable
 
 | Mode | Who runs it | What it speaks | Resident |
 |---|---|---|---|
-| **Interface** | you | RPC to a browser | **135 MB** |
-| **Headless** | an agent | MCP over stdio | **85 MB** |
+| **Interface** | you | RPC to a browser | **about 60 MB** |
+| **Headless** | an agent | MCP over stdio | **9 MB** |
 | **CLI** | either | one command, one answer | — |
 
 They are separate processes with nothing coordinating them. **They meet in the
@@ -88,8 +88,9 @@ okf ui
 ```
 
 Starts on `127.0.0.1`, prints a URL carrying a token for this run, and opens
-it. **135 MB resident** (86 MB server + 49 MB browser tab) against the desktop
-build's 633 MB — about a fifth, for exactly the same interface.
+it. **About 60 MB resident** (11 MB server + 49 MB browser tab; the Bun server
+was 86 MB) against the desktop build's 633 MB — about a tenth, for exactly the
+same interface.
 
 - Never exposed to the network (loopback only)
 - No other page in the browser can drive it (per-run token)
@@ -109,7 +110,7 @@ spawn this binary themselves and talk to it over stdio:
 bun run build:headless   # builds build/headless/okf-mcp.exe
 ```
 
-- **One process with no page attached** — that is the 85 MB against 135 MB.
+- **One process with no page attached** — that is the 9 MB against 60 MB.
 - **Self-contained**: no Bun install, nothing on `PATH`. It runs from whatever
   environment the agent host happens to start it in.
 - Register it from the connections panel — **すべてのエージェントに登録** —

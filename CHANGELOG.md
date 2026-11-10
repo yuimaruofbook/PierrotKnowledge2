@@ -1,5 +1,93 @@
 # Changelog
 
+## 0.9.0
+
+### One binary, one line to install
+
+- **`okf` is the whole application.** The built page and the icon are compiled
+  into it (`rust/src/build.rs`), so an install is that one file: `okf ui` serves
+  the page from memory when there is no checkout around it, and agent hosts
+  are given `okf serve` instead of a second `okf-mcp` download.
+- **`install.ps1` and `install.sh`.** One command downloads the binary for
+  this machine from the latest release, checks it against GitHub's digest and
+  runs `okf setup`. Nothing to unzip, no Rust, no Bun. Run again, it updates.
+- **`okf setup`** creates the starter bundle and the Desktop icon, and with
+  `--connect` registers every agent host found. `okf update` and `okf
+  uninstall` work from a lone binary: update replaces it with the newest
+  release's, verified and test-started first.
+- **More platforms.** Windows ARM64 and Linux ARM64 join the release, and the
+  Linux builds are now static (musl): one file for any distribution, Alpine
+  included, where the glibc build needed 2.35 or newer.
+
+### Connections
+
+- **Strata** is started with `strata launch` now (its `.bat` files are for a
+  source checkout only), so the notes say that, name `strata launch
+  --show-key` for the API key, and the `strata` command is what detection
+  looks for.
+- **opencode's v2 config** keeps servers under `mcp.servers`. A file already
+  laid out that way gets our entry there; anything else is written as before,
+  and uninstall takes our entry out of either place. An existing
+  `opencode.jsonc` is edited instead of gaining an `opencode.json` beside it.
+- **The built-in agent only drops `temperature` when the 400 is about
+  temperature**, not for any 400 a model server returns.
+
+### Updating
+- **UPDATE stays on the Rust build** when the install never ran Bun (no
+  `node_modules`), even if Bun happens to be on PATH. It used to pick Bun
+  first and pull in dependencies an 11 MB install never needed.
+
+### Retrieval and the built-in agent for current models
+
+- **Width variants now match.** Text is NFKC-normalised before indexing and
+  querying, so fullwidth Latin and digits (`ＲＡＧ`, `１２`) and halfwidth
+  katakana (`ｶﾞｲﾄﾞ`) find their ordinary forms. The index schema is now 6, so
+  `.rag/` rebuilds itself once on the next open.
+- **The built-in agent works with models that refuse `temperature`.** Current
+  Claude and OpenAI reasoning models answer 400 to a sampling parameter; the
+  agent resends without it and stops offering it for the rest of the run.
+- **Thinking-mode tool calls on DeepSeek and Kimi.** `reasoning_content` is
+  replayed with the tool-call turn it came with; those APIs answer 400 without
+  it.
+- `search` and `retrieve` say in their descriptions that Chinese works (it
+  already did, through the same bigrams as Japanese).
+
+### `ui` and `serve` in Rust
+
+The Rust CLI no longer hands `ui` and `serve` to Bun. `okf ui` serves the same
+Vite bundle over the same token-locked loopback HTTP + WebSocket, with every
+RPC the interface calls — external MCP connections and imports, the built-in
+agent, connect targets, canvases, bases — ported (`rust/src/ui_server.rs`,
+`rpc.rs`, `connections.rs`, `agent.rs`, `mcp/client.rs`, `mcp/registry.rs`).
+Resident memory: about 11 MB (13 MB on 1,500 notes) against 86–105 MB for
+the Bun server. `okf serve` runs the MCP server in-process (shared with
+`okf-mcp`). `okf ui --open false` skips opening the browser.
+
+- Release builds use fat LTO, one codegen unit and stripped symbols:
+  `okf-mcp` 8.6 → 7.8 MB, `okf` 11.8 → 10.9 MB on Windows.
+
+### Installing, updating and uninstalling without Bun
+
+- **Setup no longer installs Bun when the Rust build is available.** The
+  release zip carries the built interface and icon (`bun run release` now
+  rebuilds both every time), and setup installs `okf` and `okf-mcp` from cargo
+  or from this version's release, verified against GitHub's digest and
+  test-started. Bundle creation, `mcp-config` and `-Connect` run through the
+  new `okf init-bundle` and `okf connect-agent`. Anything missing falls back to
+  the Bun path as before; `OKF_BUILD=bun` forces it.
+- **UPDATE and UNINSTALL run on the Rust build when Bun is absent.** The Rust
+  `Update` and `Uninstall` now take `--confirm` (ask once), and `Update
+  --rebuild` replaces `build/cli/okf` and `build/headless/okf-mcp` with the new
+  version's verified release builds, parking a running one as `.old`.
+- The Rust updater now replaces `UPDATE.bat` and `UPDATE.command` too (they
+  were missing from its list), and deletes the downloaded archive once applied.
+- Your own saves no longer come back as "changed outside the app" when a slow
+  request delays the next watcher poll: the grace period starts at that poll,
+  not at the write.
+- Memory figures in `--help`, the README and the docs are the Rust ones,
+  measured after answering real requests: `ui` server about 11 MB (about 60 MB
+  with its browser tab), `serve` about 9 MB (15 MB on 1,500 notes; Bun 95 MB).
+
 ## 0.8.2
 
 ### Installing and updating on other machines

@@ -165,10 +165,10 @@ function usage(): string {
 
   lines.push(
     "その他:",
-    "  ui                   ブラウザに UI を出す（常駐 135 MB・推奨）",
+    "  ui                   ブラウザに UI を出す（常駐 約11 MB・推奨）",
     "  Update               新しいリリースを確認する（--apply で適用）",
     "  Uninstall            削除の計画を表示する（--apply で実行）",
-    "  serve                MCP サーバーとして起動（ヘッドレス・常駐 85 MB）",
+    "  serve                MCP サーバーとして起動（ヘッドレス・常駐 約9 MB）",
     "  mcp-config           他のツールに貼る MCP 設定を出力する",
     "                       （--format json | toml | opencode | yaml | command）",
     "  watch                log.md を追尾して変更を表示する",

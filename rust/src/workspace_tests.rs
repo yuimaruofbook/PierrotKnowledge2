@@ -1670,3 +1670,30 @@ fn the_apps_own_writes_are_not_reported_as_external_changes() {
         seen.borrow().iter().filter(|p| p.contains('.')).cloned().collect();
     assert!(files.is_empty(), "{files:?}");
 }
+
+#[test]
+fn own_writes_stay_quiet_when_the_next_poll_comes_late() {
+    let (_d, root) = bundle_dir("okf-watch-");
+    seed(&root, &[("wiki/a.md", &concept("Concept", "alpha"))]);
+
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let sink = seen.clone();
+    let mut ws = Workspace::new(WorkspaceOptions {
+        watch: Some(true),
+        on_external_change: Some(Box::new(move |paths, _| sink.borrow_mut().extend_from_slice(paths))),
+        ..Default::default()
+    });
+    ws.open(&root).unwrap();
+
+    ws.write_file("wiki/mine.md", &concept("Concept", "mine"), &as_actor("process:test")).unwrap();
+    // A slow request (an index rebuild) keeps the loop from polling for longer than the grace.
+    std::thread::sleep(Duration::from_millis(1000));
+    let until = Instant::now() + Duration::from_millis(900);
+    while Instant::now() < until {
+        ws.poll_watcher();
+        std::thread::sleep(Duration::from_millis(30));
+    }
+    let files: Vec<String> =
+        seen.borrow().iter().filter(|p| p.contains('.')).cloned().collect();
+    assert!(files.is_empty(), "{files:?}");
+}

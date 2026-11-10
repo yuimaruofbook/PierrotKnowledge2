@@ -206,7 +206,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "retrieve",
     title: "Retrieve context",
     description:
-      "Retrieve relevant passages assembled for reasoning, with citation anchors and a character budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Works with Japanese and English.",
+      "Retrieve relevant passages assembled for reasoning, with citation anchors and a character budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Works with Japanese, Chinese and English.",
     inputSchema: {
       type: "object",
       properties: {
@@ -262,7 +262,7 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "search",
     title: "Search",
     description:
-      "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese via bigram indexing. Concepts tagged DEAD are left out unless include_dead is true (to list them: tags ['DEAD'] with include_dead).",
+      "BM25 full-text search across wiki concepts, returning one hit per document. Use this to LOCATE pages (and to check whether knowledge already exists before writing). To answer a question from the content, use retrieve instead. Handles Japanese and Chinese via bigram indexing. Concepts tagged DEAD are left out unless include_dead is true (to list them: tags ['DEAD'] with include_dead).",
     inputSchema: {
       type: "object",
       properties: {

@@ -36,7 +36,7 @@ import {
 } from "../../shared/okf";
 
 /** Bumped when the schema or the normalisation changes; forces a rebuild. */
-const SCHEMA_VERSION = "5";
+const SCHEMA_VERSION = "6";
 
 /**
  * Tags are stored as one delimited string so a document stays a single row.

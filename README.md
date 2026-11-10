@@ -19,14 +19,14 @@ there is one write path, so a human edit and an agent edit cannot disagree.
 
 | | What it is | Who runs it | Resident memory |
 |---|---|---|---|
-| **`ui`** | The full interface, served to a browser you already have open | **you** | **135 MB** |
-| **Headless** | MCP server over stdio, no interface at all | **an agent** | **8 MB** (Rust; 85 MB as the Bun build) |
+| **`ui`** | The full interface, served to a browser you already have open | **you** | **about 60 MB**: server 11 MB (Rust; 86 MB as the Bun build) + browser tab 49 MB |
+| **Headless** | MCP server over stdio, no interface at all | **an agent** | **9 MB** (Rust; 95 MB as the Bun build) |
 | **CLI** | One command, one answer, exits | either | — (0.04 s per run; 0.19 s as the Bun build) |
 
 **Agents run headless. Always.** An agent host — Claude Code, Codex, opencode,
 Hermes — spawns `build/headless/okf-mcp.exe` itself and talks to it over stdio.
 It is one process with no page attached, which is where the difference between
-8 MB and 135 MB comes from. Never point an agent at `ui` mode: that interface
+9 MB and 60 MB comes from. Never point an agent at `ui` mode: that interface
 speaks RPC to a browser, not MCP, and there is nothing there for an agent to
 call.
 
@@ -63,8 +63,8 @@ moment later rather than through any connection between them.
 
 | | `ui` mode | Desktop (removed at 0.5.0) | Obsidian |
 |---|---|---|---|
-| Resident memory | **135 MB** | 633 MB | 424 MB |
-| ├ the app itself | 95 MB | 241 MB | — |
+| Resident memory | **about 60 MB** (135 MB as the Bun build) | 633 MB | 424 MB |
+| ├ the app itself | 11 MB (Rust server) | 241 MB | — |
 | └ the page's renderer | 49 MB (browser tab) | 360 MB (6 renderer processes) | — |
 | On disk after setup | **147 MB** | — | 373 MB |
 
@@ -77,13 +77,14 @@ executable's size mislabelled.
 Headless is a separate shape again: `bun run build:headless` produces one
 self-contained executable — no `node_modules`, no Bun on `PATH` — and that is
 all an agent host needs. With a Rust toolchain (`cargo`) on `PATH` it builds
-the Rust port in `rust/`: **7 MB**, about **8 MB resident**, first answer in
+the Rust port in `rust/`: **8 MB**, about **9 MB resident** (15 MB on 1,500 notes), first answer in
 **33 ms**. Without one, Bun compiles the TypeScript into a 94 MB executable
 that answers identically — `test/rust-parity.test.ts` sends the same 186 MCP
 calls to both and requires byte-identical replies. `bun run build:cli` does the
 same for the CLI (`build/cli/okf`, 9 MB), which the `PierrotKnowledge2`
-launcher prefers; its `ui` command hands off to Bun, because the interface is
-still TypeScript. `OKF_BUILD=bun` forces the Bun build.
+launcher prefers; its `ui` serves the same interface from Rust, so a machine
+with both binaries and the built page needs no Bun at all. `OKF_BUILD=bun`
+forces the Bun build.
 
 **The desktop build was not light and never became light.** At 633 MB it was
 heavier than Obsidian. The premise this project began with — that the system
@@ -112,9 +113,43 @@ to trim on our side.
 
 ## Install
 
-One command per platform. Bun is installed for you if it is not already there.
+One command per platform. Setup installs the Rust build for your platform
+(verified against the release's digest) and needs nothing else; where that is
+not possible it falls back to Bun, which it installs for you if needed.
 
-**Windows** — double-click `SETUP.bat`, or:
+**The one-liner** — the whole application is one binary (about 11 MB, with
+the interface inside it). This downloads the one for your machine, verifies it
+against the release's digest and runs `okf setup`: a starter bundle and a
+Desktop icon. No Rust, no Bun, nothing to unzip. Run it again later and it
+updates instead.
+
+```powershell
+irm https://raw.githubusercontent.com/yuimaruofbook/PierrotKnowledge2/main/install.ps1 | iex
+```
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/yuimaruofbook/PierrotKnowledge2/main/install.sh | bash
+```
+
+The digest check covers the binary, not the script: as with any `| bash`
+install, you are trusting this repository's `main` branch. To read it first,
+download `install.sh` / `install.ps1`, look, then run the file.
+
+Binaries exist for Windows (x64, ARM64), macOS (Apple silicon, Intel) and
+Linux (x64, ARM64; static, so any distribution including Alpine). It lands in
+`%LOCALAPPDATA%\PierrotKnowledge2` or `~/.local/share/PierrotKnowledge2`; set
+`OKF_INSTALL_DIR` to choose. From there:
+
+```
+okf setup --connect     register with every agent host found (they start `okf serve`)
+okf update --apply      replace the binary with the newest release, verified
+okf uninstall           show what removing it involves; nothing happens until --apply
+```
+
+The zip below is the same application as source, for development or for a
+platform with no binary.
+
+**From a downloaded zip, Windows** — double-click `SETUP.bat`, or:
 
 ```
 SETUP.bat
@@ -319,8 +354,9 @@ Credentials are never typed into this app.
 
 Double-click `UPDATE.bat` (Windows) or run `bash UPDATE.command` (macOS /
 Linux). It checks, verifies and shows the release notes, asks once, and on `y`
-installs the release and rebuilds — `bun install`, the interface, and whichever
-binaries were built here before. Quit the app and any agent using it first: a
+installs the release and brings `build/` up to date — with Bun, `bun install`,
+the interface and whichever binaries were built here before; without Bun, the
+new version's verified Rust builds (the interface ships prebuilt). Quit the app and any agent using it first: a
 running binary cannot be replaced, and that step is reported as failed.
 
 > **Coming from 0.8.0 or earlier?** `UPDATE.bat` arrives with 0.8.1, so that

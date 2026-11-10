@@ -24,12 +24,19 @@ if ! command -v bun >/dev/null 2>&1 && [ -x "$HOME/.bun/bin/bun" ]; then
   export PATH="$HOME/.bun/bin:$PATH"
 fi
 
-if ! command -v bun >/dev/null 2>&1; then
-  echo "  Bun が見つかりません。先に SETUP.command を実行してください。" >&2
-  status=1
-else
+# An install that never ran Bun (no node_modules) stays on the Rust build even
+# when Bun happens to be on PATH: no dependencies, nothing to rebuild.
+if [ ! -d node_modules ] && [ -x build/cli/okf ]; then
+  build/cli/okf update --confirm --rebuild "$@" || status=$?
+elif command -v bun >/dev/null 2>&1; then
   # The source, not build/cli/okf: rebuilding that binary is part of the update.
   bun run src/bun/cli/main.ts update --confirm --rebuild "$@" || status=$?
+elif [ -x build/cli/okf ]; then
+  # Without Bun the Rust build updates itself; renaming over a running binary is safe here.
+  build/cli/okf update --confirm --rebuild "$@" || status=$?
+else
+  echo "  Bun も build/cli/okf も見つかりません。先に SETUP.command を実行してください。" >&2
+  status=1
 fi
 
 if [ "${status:-0}" != "0" ]; then

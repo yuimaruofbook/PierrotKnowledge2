@@ -87,8 +87,89 @@ if [ "$(uname -s)" = "Darwin" ] && command -v xattr >/dev/null 2>&1; then
   xattr -dr com.apple.quarantine "$PROJECT_ROOT" 2>/dev/null || true
 fi
 
+# --- Rust build: what lets this install run without Bun ----------------------
+
+# The release carries the built interface and icon; the two executables come
+# from cargo when a Rust toolchain is here, or else from this version's GitHub
+# release, used only if they match the digest GitHub computed and start on this
+# machine. Any failure falls back to the Bun path below, so setup never needs
+# more than it did before. OKF_BUILD=bun forces that path.
+native_platform() {
+  case "$(uname -s)-$(uname -m)" in
+    Darwin-arm64)  echo macos-arm64 ;;
+    Darwin-x86_64) echo macos-x64 ;;
+    Linux-x86_64)  echo linux-x64 ;;
+    Linux-aarch64|Linux-arm64) echo linux-arm64 ;;
+    *) return 1 ;;
+  esac
+}
+
+# install_native <bin> <build subdir>. Runs as an `if` condition, where `set -e`
+# is off, so every step checks its own result.
+install_native() {
+  local bin="$1" target="$PROJECT_ROOT/build/$2/$1"
+  local staged="$target.download" plat name version tag digest="" actual
+  mkdir -p "$(dirname "$target")" || return 1
+  if command -v cargo >/dev/null 2>&1 && [ -f "$PROJECT_ROOT/rust/Cargo.toml" ]; then
+    cargo build --release --manifest-path "$PROJECT_ROOT/rust/Cargo.toml" --bin "$bin" \
+      && cp "$PROJECT_ROOT/rust/target/release/$bin" "$staged" \
+      || { note "Rust 版の $bin をビルドできませんでした"; return 1; }
+  else
+    plat="$(native_platform)" || { note "$(uname -s)-$(uname -m) 向けのビルド済みバイナリはありません"; return 1; }
+    name="$bin-$plat"
+    version="$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$PROJECT_ROOT/package.json" | head -n 1)"
+    # Releases have been tagged both V0.5.2 and v0.5.2. No jq on a stock
+    # machine: the asset's digest is the first one after its name.
+    for tag in "V$version" "v$version"; do
+      digest="$(curl -fsSL --max-time 15 -H 'Accept: application/vnd.github+json' \
+        "https://api.github.com/repos/yuimaruofbook/PierrotKnowledge2/releases/tags/$tag" 2>/dev/null \
+        | grep -oE '"(name|digest)": *"[^"]*"' \
+        | awk -F'"' -v want="$name" '$2 == "name" { hit = ($4 == want) } $2 == "digest" && hit && out == "" { out = $4 } END { print out }')" || digest=""
+      [ -n "$digest" ] && break
+    done
+    [ -n "$digest" ] || { note "リリース $version に $name がありません"; return 1; }
+    curl -fsSL -o "$staged" "https://github.com/yuimaruofbook/PierrotKnowledge2/releases/download/$tag/$name" \
+      || { rm -f "$staged"; note "$name をダウンロードできませんでした"; return 1; }
+    if command -v sha256sum >/dev/null 2>&1; then
+      actual="$(sha256sum "$staged" | cut -d ' ' -f 1)"
+    else
+      actual="$(shasum -a 256 "$staged" | cut -d ' ' -f 1)"
+    fi
+    if [ "sha256:$actual" != "$digest" ]; then
+      rm -f "$staged"
+      note "$name のハッシュが一致しません（破損または改ざんの可能性）"
+      return 1
+    fi
+  fi
+  chmod +x "$staged" || return 1
+  # The digest proves it is the published file, not that it runs here (a Linux
+  # build against a newer glibc fails only when spawned).
+  if [ "$bin" = "okf" ]; then
+    OKF_BUNDLE='' "$staged" help >/dev/null 2>&1
+  else
+    OKF_BUNDLE='' "$staged" </dev/null >/dev/null 2>&1
+  fi || { rm -f "$staged"; note "$bin がこのマシンで起動しません"; return 1; }
+  # Renaming over a running binary is safe here: it keeps its image.
+  mv -f "$staged" "$target"
+}
+
+NATIVE=0
+OKF="$PROJECT_ROOT/build/cli/okf"
+if [ "${OKF_BUILD:-}" != "bun" ]; then
+  step "Installing the Rust build (no Bun needed)"
+  if [ ! -f "$PROJECT_ROOT/src/mainview/dist/index.html" ]; then
+    note "画面のビルドが同梱されていないため、Bun で組み立てます"
+  # Agents spawn the headless server by path; without it their configs would
+  # name `bun run`, which a Bun-free machine cannot start.
+  elif install_native okf cli && install_native okf-mcp headless; then
+    NATIVE=1
+    ok "Rust: $OKF"
+  fi
+fi
+
 # --- Bun ---------------------------------------------------------------------
 
+if [ "$NATIVE" != "1" ]; then
 step "Checking for Bun"
 
 if ! command -v bun >/dev/null 2>&1; then
@@ -126,11 +207,14 @@ command -v bun >/dev/null 2>&1 || {
 }
 
 ok "Bun: $(command -v bun) ($(bun --version))"
+fi
 
 cd "$PROJECT_ROOT"
 
 # --- dependencies ------------------------------------------------------------
 
+# The Rust build needs none of this: the release ships the page and the icon.
+if [ "$NATIVE" != "1" ]; then
 step "Installing dependencies"
 bun install
 ok "Dependencies installed"
@@ -139,6 +223,7 @@ ok "Dependencies installed"
 
 step "Generating application icon"
 bun run scripts/make-icon.ts
+fi
 
 # iconutil turns the .iconset into a real .icns; it ships with Xcode's command
 # line tools, so its absence is a missing nicety rather than a failure.
@@ -160,9 +245,11 @@ LAUNCH_CMD=""
 # not running this script (see `bun run build:headless`).
 LAUNCH_MODE="web"
 
+if [ "$NATIVE" != "1" ]; then
 step "Building the interface"
 bun run build:view
 ok "Interface ready (127.0.0.1, opens in your browser)"
+fi
 
 # --- starter bundle ----------------------------------------------------------
 
@@ -171,7 +258,11 @@ if [ -z "$BUNDLE_PATH" ]; then
 fi
 
 step "Preparing knowledge bundle at $BUNDLE_PATH"
-bun run scripts/init-bundle.ts "$BUNDLE_PATH"
+if [ "$NATIVE" = "1" ]; then
+  "$OKF" init-bundle "$BUNDLE_PATH"
+else
+  bun run scripts/init-bundle.ts "$BUNDLE_PATH"
+fi
 
 # The launcher is a real script in the install directory, and every shortcut
 # just runs it.
@@ -292,7 +383,7 @@ MCP_PATH="$PROJECT_ROOT/mcp-config.json"
 # --bundle, a broken build after an update — leaves an empty file where the
 # working config the user was told to copy from used to be.
 MCP_TMP="$MCP_PATH.tmp.$$"
-if bun run src/bun/cli/main.ts mcp-config --bundle "$BUNDLE_PATH" > "$MCP_TMP"; then
+if if [ "$NATIVE" = "1" ]; then "$OKF" mcp-config --bundle "$BUNDLE_PATH"; else bun run src/bun/cli/main.ts mcp-config --bundle "$BUNDLE_PATH"; fi > "$MCP_TMP"; then
   mv "$MCP_TMP" "$MCP_PATH"
   ok "$MCP_PATH"
 else
@@ -306,7 +397,7 @@ if [ "$CONNECT" = "1" ]; then
   step "Connecting agent runtimes (--connect)"
   # Detection and merging both live in connect-agent.ts, so this script never
   # has to know which hosts exist or what shape each one's config is.
-  if bun run scripts/connect-agent.ts --all "$BUNDLE_PATH"; then
+  if if [ "$NATIVE" = "1" ]; then "$OKF" connect-agent --all "$BUNDLE_PATH"; else bun run scripts/connect-agent.ts --all "$BUNDLE_PATH"; fi; then
     CONNECTED="done"
   else
     warn "Some runtimes could not be connected — see the messages above"

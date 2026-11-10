@@ -6,9 +6,10 @@
 //! Never interactive; `--json` prints machine-readable output; errors go to
 //! stderr; exit codes mean something: 0 ok, 1 tool error, 2 usage error.
 //!
-//! `ui` and `serve` are the Bun server and stay TypeScript: [`delegate_to_bun`]
-//! runs the TS CLI with the same argv.
+//! `ui` serves the browser interface ([`crate::ui_server`]); `serve` runs the
+//! MCP server over stdio in this process.
 
+use crate::cli::install::{ask_consent, rebuild_native};
 use crate::cli::args::{build_tool_args, parse_argv, FlagValue, ParsedArgs, ToolSchema};
 use crate::cli::rmux::{
     agent_workspace_plan, capabilities, diagnose, has_session, is_broken_install, job_plan, kill_session,
@@ -16,7 +17,7 @@ use crate::cli::rmux::{
     parse_snapshot, render_plan, send_keys, window_target, RmuxCommand, MAIN_WINDOW, RMUX_SESSION, WATCH_WINDOW,
 };
 use crate::connect::targets::{
-    bun_command, find_install_root, headless_binary_path, render_server_config, resolve_command,
+    find_install_root, headless_binary_path, render_server_config, resolve_command,
     server_command_line, ConfigFormat,
 };
 use crate::mcp::tools::{call_tool, TOOLS};
@@ -186,10 +187,10 @@ fn usage() -> String {
 
     for fixed in [
         "その他:",
-        "  ui                   ブラウザに UI を出す（常駐 135 MB・推奨）",
+        "  ui                   ブラウザに UI を出す（常駐 約11 MB・推奨）",
         "  Update               新しいリリースを確認する（--apply で適用）",
         "  Uninstall            削除の計画を表示する（--apply で実行）",
-        "  serve                MCP サーバーとして起動（ヘッドレス・常駐 85 MB）",
+        "  serve                MCP サーバーとして起動（ヘッドレス・常駐 約9 MB）",
         "  mcp-config           他のツールに貼る MCP 設定を出力する",
         "                       （--format json | toml | opencode | yaml | command）",
         "  watch                log.md を追尾して変更を表示する",
@@ -579,13 +580,25 @@ fn to_fixed(value: f64, digits: usize) -> String {
     }
 }
 
+/// The source-tree install this binary belongs to. A standalone binary run
+/// from inside somebody's checkout or old zip install is not part of it, and
+/// must not update or uninstall that folder instead of itself.
+fn source_install_dir() -> Option<String> {
+    let dir = find_install_dir(&FindInstallDirOptions::default())?;
+    let exe = std::env::current_exe().ok()?.to_string_lossy().into_owned();
+    crate::shared::update::is_inside(&dir, &exe).then_some(dir)
+}
+
 /// Update from the newest GitHub release. Nothing is written without
 /// `--apply`, and even then only after the download has been verified against
 /// the digest GitHub computed.
 fn run_update(parsed: &ParsedArgs) -> i32 {
-    let Some(install_dir) = find_install_dir(&FindInstallDirOptions::default()) else {
-        err("インストール先を特定できませんでした。アプリのフォルダで実行してください。");
-        return EXIT_TOOL_ERROR;
+    // No source tree around us: this binary is the install, and updates itself.
+    let Some(install_dir) = source_install_dir() else {
+        return crate::cli::install::self_update(
+            parsed.flag_set("apply"),
+            parsed.flag("confirm").is_some_and(FlagValue::is_true),
+        );
     };
     update_flow(parsed, &install_dir, &|| fetch_latest_release(&GithubSource::default_source()))
 }
@@ -607,6 +620,11 @@ fn update_flow(
         return match rollback(install_dir, &dir) {
             Ok(restored) => {
                 out(&format!("{} 件を戻しました: {}", restored.len(), restored.join(", ")));
+                // The rolled-back source needs `build/` brought level exactly as an update does.
+                if parsed.flag_set("rebuild") {
+                    let version = read_installed(install_dir).map(|i| i.version).unwrap_or_default();
+                    return if rebuild_native(install_dir, &version) { EXIT_OK } else { EXIT_TOOL_ERROR };
+                }
                 out(&format!("\n次に実行してください:\n{REBUILD_HINT}"));
                 EXIT_OK
             }
@@ -718,7 +736,12 @@ fn update_flow(
         return if verdict.action() == "up-to-date" { EXIT_OK } else { EXIT_TOOL_ERROR };
     }
 
-    if !parsed.flag_set("apply") {
+    let confirm = parsed.flag("confirm").is_some_and(FlagValue::is_true);
+    if !(parsed.flag_set("apply") || confirm && ask_consent("このリリースに更新しますか？")) {
+        if confirm {
+            let _ = std::fs::remove_dir_all(&staging);
+            return EXIT_OK;
+        }
         out("適用するには次を実行してください:");
         out(&format!("  {} Update --apply", self_name()));
         out(&format!("（ダウンロード済み: {archive}）"));
@@ -745,9 +768,18 @@ fn update_flow(
     if let Err(error) = write_install_record(install_dir, &record) {
         return fail(&error);
     }
+    // The archive and its extracted copy are spent; left behind they cost a release's size.
+    let _ = std::fs::remove_dir_all(&staging);
 
     out(&format!("\n完了。置き換えた項目: {}", result.replaced.join(", ")));
     out(&format!("旧版の退避先       : {}", result.backup_dir));
+
+    // `--rebuild` (what UPDATE.bat passes) does that follow-up itself.
+    if parsed.flag_set("rebuild") {
+        let ok = rebuild_native(install_dir, &record.version);
+        out(&format!("\n問題があれば戻せます:\n  {} Update --rollback \"{}\" --rebuild", self_name(), result.backup_dir));
+        return if ok { EXIT_OK } else { EXIT_TOOL_ERROR };
+    }
     out(&format!("\n次に実行してください:\n{REBUILD_HINT}"));
 
     // The failure this prevents: an update that appears to do nothing. `build/`
@@ -781,7 +813,9 @@ fn fail(message: &str) -> i32 {
 /// Show, and optionally carry out, what removing this application involves.
 /// The install folder itself is never deleted here.
 fn run_uninstall(parsed: &ParsedArgs) -> i32 {
-    let Some(install_dir) = find_install_dir(&FindInstallDirOptions::default()) else {
+    // A standalone install is the folder the binary is in.
+    let standalone = || std::env::current_exe().ok().map(|p| nodepath::dirname(&p.to_string_lossy()));
+    let Some(install_dir) = source_install_dir().or_else(standalone) else {
         err("インストール先を特定できませんでした。アプリのフォルダで実行してください。");
         return EXIT_TOOL_ERROR;
     };
@@ -821,7 +855,11 @@ fn run_uninstall(parsed: &ParsedArgs) -> i32 {
         plan.install_dir
     ));
 
-    if !parsed.flag_set("apply") {
+    let confirm = parsed.flag("confirm").is_some_and(FlagValue::is_true);
+    if !(parsed.flag_set("apply") || confirm && ask_consent("\n上の内容でアンインストールしますか？")) {
+        if confirm {
+            return EXIT_OK;
+        }
         out(&format!("\n実行するには:\n  {} Uninstall --apply", self_name()));
         out("設定も消すなら --purge-settings を付けてください。");
         return EXIT_OK;
@@ -909,7 +947,8 @@ fn print_mcp_config(parsed: &ParsedArgs, bundle: Option<&str>) -> i32 {
     if asked == "command" {
         err(&format!("\nOKF_BUNDLE={}", bundle.replace('\\', "/")));
     }
-    if !Path::new(&headless_binary_path(&root)).exists() {
+    let from_source = Path::new(&nodepath::join(&[&root, "src", "bun", "mcp", "standalone.ts"])).exists();
+    if from_source && !Path::new(&headless_binary_path(&root)).exists() {
         err("\n※ ヘッドレスの実行ファイルが未ビルドのため、bun 経由の起動になっています。\n  `bun run build:headless` を実行すると、Bun のインストールに依存しない形になります。");
     }
 
@@ -956,58 +995,92 @@ fn watch(workspace: &Workspace) -> i32 {
 }
 
 // ---------------------------------------------------------------------------
-// ui / serve: the Bun server stays TypeScript
+// ui / serve
 // ---------------------------------------------------------------------------
 
-/// Commands that run on the TypeScript implementation (Bun) because they are
-/// the Bun server itself.
-pub const BUN_COMMANDS: [&str; 2] = ["ui", "serve"];
-
-/// The TS CLI entry point of this install: `src/bun/cli/main.ts` in the
-/// nearest enclosing install tree of the executable or the working directory.
-fn find_ts_entry() -> Option<String> {
+/// The built view (`src/mainview/dist`), beside the executable in an install
+/// (`build/cli/okf` → `src/mainview/dist`) or under the working directory.
+fn find_view_root() -> Option<String> {
     let exe = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let cwd = std::env::current_dir().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-    for start in [nodepath::dirname(&exe), cwd] {
-        let mut dir = nodepath::resolve1(&start);
-        for _hop in 0..8 {
-            let entry = nodepath::join(&[&dir, "src", "bun", "cli", "main.ts"]);
-            if Path::new(&entry).is_file() {
-                return Some(entry);
-            }
-            let parent = nodepath::dirname(&dir);
-            if parent == dir {
-                break;
-            }
-            dir = parent;
-        }
-    }
-    None
+    let here = nodepath::dirname(&exe);
+    [nodepath::join(&[&here, "..", "..", "src", "mainview", "dist"]), nodepath::join(&[&cwd, "src", "mainview", "dist"])]
+        .into_iter()
+        .find(|c| Path::new(&nodepath::join(&[c, "index.html"])).is_file())
 }
 
-const BUN_MISSING: &str = "Bun が見つかりません。https://bun.sh からインストールしてください。";
+/// Serve the interface to a browser that is already open, instead of
+/// shipping a window with it.
+fn serve_ui(parsed: &ParsedArgs, bundle: Option<&str>) -> i32 {
+    use crate::platform::NativePlatform;
+    use crate::rpc::Rpc;
+    use crate::ui_server::{broadcast, listen, mint_token, run_loop, Sockets};
+    use std::rc::Rc;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
 
-/// Run the TS CLI with the same argv and inherited stdio; its exit code is ours.
-fn delegate_to_bun(argv: &[String]) -> i32 {
-    let Some(entry) = find_ts_entry() else {
-        err("この機能は TypeScript 版（Bun）で動きますが、src/bun/cli/main.ts が見つかりません。");
-        return EXIT_TOOL_ERROR;
+    let Some(bundle) = bundle else {
+        err("バンドルが指定されていません（--bundle か OKF_BUNDLE）");
+        return EXIT_USAGE;
     };
-    let status = Command::new(bun_command())
-        .arg("run")
-        .arg(&entry)
-        .args(argv)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status();
-    match status {
-        Ok(status) => status.code().unwrap_or(EXIT_TOOL_ERROR),
-        Err(_) => {
-            err(BUN_MISSING);
-            EXIT_TOOL_ERROR
-        }
+    // On disk when there is a checkout (so the page can be rebuilt without
+    // recompiling), otherwise the copy compiled into this binary.
+    let view_root = find_view_root();
+    if view_root.is_none() && crate::embedded::VIEW.is_empty() {
+        err("ビューがビルドされていません。`bun run build:view` を実行してください。");
+        return EXIT_TOOL_ERROR;
     }
+
+    let sockets: Sockets = Rc::default();
+    let pushes = Rc::clone(&sockets);
+    let mut workspace = Workspace::new(WorkspaceOptions {
+        watch: Some(true),
+        on_external_change: Some(Box::new(move |paths, info| {
+            broadcast(&pushes, "fileChanged", &json!({ "paths": paths, "info": info }));
+        })),
+        on_error: Some(Rc::new(|message| err(&format!("[okf ui] {message}")))),
+    });
+    if let Err(error) = workspace.open(bundle) {
+        err(&error.to_string());
+        return EXIT_TOOL_ERROR;
+    }
+
+    let port = match parsed.flag("port") {
+        Some(FlagValue::Str(s)) => s.parse::<u16>().unwrap_or(0),
+        _ => 0,
+    };
+    let token = mint_token();
+    let (events_tx, events) = std::sync::mpsc::channel();
+    let port = match listen(port, token.clone(), view_root.map(Into::into), events_tx) {
+        Ok(port) => port,
+        Err(error) => {
+            err(&error.to_string());
+            return EXIT_TOOL_ERROR;
+        }
+    };
+    let url = format!("http://127.0.0.1:{port}/?token={token}");
+    out(&format!("{bundle}
+"));
+    out(&format!("  {url}
+"));
+    out("ブラウザで上の URL を開いてください（トークン付き）。Ctrl+C で終了します。");
+
+    // `--open false` (or 0/no/off) skips it, for tests and remote sessions.
+    let open = parsed.flag("open").is_none_or(|f| crate::cli::args::coerce(f, &json!({ "type": "boolean" })) == json!(true));
+    if open {
+        // Best effort: the URL is printed above either way.
+        let _ = crate::platform::Platform::open_external(&NativePlatform, &url);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let _ = ctrlc::set_handler(move || flag.store(true, std::sync::atomic::Ordering::SeqCst));
+
+    let mut rpc = Rpc::new(Box::new(NativePlatform));
+    run_loop(&mut workspace, &mut rpc, &sockets, &events, &stop);
+    rpc.connections.close_all();
+    workspace.close();
+    EXIT_OK
 }
 
 // ---------------------------------------------------------------------------
@@ -1040,8 +1113,12 @@ pub fn run<S: AsRef<str>>(argv: &[S]) -> i32 {
     if command == "rmux" {
         return handle_rmux(&parsed, bundle.as_deref());
     }
-    if BUN_COMMANDS.contains(&command.as_str()) {
-        return delegate_to_bun(&argv_owned);
+    if command == "ui" {
+        return serve_ui(&parsed, bundle.as_deref());
+    }
+    if command == "serve" {
+        crate::mcp::stdio::run_standalone(bundle.as_deref());
+        return EXIT_OK;
     }
     if command == "update" {
         return run_update(&parsed);
@@ -1051,6 +1128,38 @@ pub fn run<S: AsRef<str>>(argv: &[S]) -> i32 {
     }
     if command == "mcp-config" {
         return print_mcp_config(&parsed, bundle.as_deref());
+    }
+    // What the one-line installer runs after placing the binary; unlisted in `--help`.
+    if command == "setup" {
+        return crate::cli::install::setup(
+            bundle.as_deref(),
+            !parsed.flag("no_shortcut").is_some_and(FlagValue::is_true),
+            parsed.flag("connect").is_some_and(FlagValue::is_true),
+        );
+    }
+    // Plumbing for setup, which otherwise needs Bun for these two; unlisted in `--help`.
+    if command == "init-bundle" {
+        let Some(path) = parsed.positional.get(1) else {
+            err("usage: okf init-bundle <bundle-path>");
+            return EXIT_USAGE;
+        };
+        return match crate::cli::install::init_bundle(path) {
+            Ok(()) => EXIT_OK,
+            Err(error) => fail(&error),
+        };
+    }
+    if command == "connect-agent" {
+        // `--all <bundle>` parses as a flag carrying the bundle as its value.
+        let (target, bundle) = match parsed.flag("all") {
+            Some(FlagValue::Str(b)) => (Some("--all".to_string()), Some(b.clone())),
+            Some(f) if f.is_true() => (Some("--all".to_string()), parsed.positional.get(1).cloned()),
+            _ => (parsed.positional.get(1).cloned(), parsed.positional.get(2).cloned()),
+        };
+        let (Some(target), Some(bundle)) = (target, bundle) else {
+            err("usage: okf connect-agent <target-id>|--all <bundle-path>");
+            return EXIT_USAGE;
+        };
+        return crate::cli::install::connect_agent(&target, &bundle, &project_root());
     }
 
     let tool = resolve_tool(&command);

@@ -9,8 +9,8 @@
  * `Workspace` the interface drives, without a browser attached — which is
  * where most of the desktop build's memory goes.
  *
- * The Rust port (`rust/`) is built when `cargo` is on PATH: 7 MB and 8 MB
- * resident against Bun's 94 MB and 90 MB, answering byte for byte the same
+ * The Rust port (`rust/`) is built when `cargo` is on PATH: 8 MB and 9 MB
+ * resident against Bun's 94 MB and 95 MB, answering byte for byte the same
  * (`test/rust-parity.test.ts`). Without a Rust toolchain — most machines this
  * runs on during setup — the Rust build attached to this version's release is
  * downloaded and verified instead, and failing that Bun compiles the

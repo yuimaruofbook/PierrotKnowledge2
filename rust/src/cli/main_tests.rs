@@ -112,11 +112,6 @@ fn tool_help_marks_required_arguments_and_explains_positionals() {
     assert!(tool_help(resolve_tool("read_map").unwrap()).ends_with("引数はありません。"));
 }
 
-#[test]
-fn only_ui_and_serve_are_handed_to_bun() {
-    assert_eq!(BUN_COMMANDS, ["ui", "serve"]);
-}
-
 // ---- running the CLI
 
 struct Fixture {

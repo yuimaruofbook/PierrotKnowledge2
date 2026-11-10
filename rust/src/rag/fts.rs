@@ -26,7 +26,7 @@ use crate::shared::okf::{
 use crate::shared::types::{ChunkHit, ConceptDocument, SearchFilters, SearchHit, TagCount};
 
 /// Bumped when the schema or the normalisation changes; forces a rebuild.
-pub const SCHEMA_VERSION: &str = "5";
+pub const SCHEMA_VERSION: &str = "6";
 
 /// Tags are stored as one delimited string so a document stays a single row.
 /// The delimiter wraps both ends, so a LIKE on the wrapped tag matches a whole

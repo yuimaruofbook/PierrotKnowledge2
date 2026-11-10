@@ -71,7 +71,12 @@ pub fn normalize_for_index(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let lower = text.to_lowercase();
+    // NFKC first: fullwidth Latin/digits (ＲＡＧ, １２) and halfwidth katakana
+    // (ｶﾞｲﾄﾞ) are everyday in Japanese and Chinese text and must match their
+    // ordinary forms.
+    let lower = icu_normalizer::ComposingNormalizerBorrowed::new_nfkc()
+        .normalize(text)
+        .to_lowercase();
 
     let mut expanded = String::with_capacity(lower.len() * 2);
     let mut run = String::new();
@@ -404,6 +409,12 @@ mod tests {
     fn expands_cjk_runs_and_lowercases_latin() {
         assert_eq!(normalize_for_index("知識ベース"), "知識 識ベ ベー ース");
         assert_eq!(normalize_for_index("Hello World"), "hello world");
+    }
+
+    #[test]
+    fn folds_width_variants_and_handles_chinese() {
+        assert_eq!(normalize_for_index("ＲＡＧ ｶﾞｲﾄﾞ １２"), "rag ガイ イド 12");
+        assert_eq!(normalize_for_index("知识库检索"), "知识 识库 库检 检索");
     }
 
     #[test]

@@ -49,16 +49,30 @@ export function mergeMcpJson(existing: string | null, name: string, server: Stdi
  * array with the executable at the front, and environment variables live under
  * `environment` rather than `env`.
  */
+/**
+ * opencode's v2 layout keeps servers under `mcp.servers` instead of directly
+ * under `mcp`. A legacy server that happened to be called "servers" would
+ * carry a `type`.
+ */
+function opencodeV2Servers(mcp: Record<string, unknown>): Record<string, unknown> | null {
+  const servers = mcp.servers;
+  return isRecord(servers) && typeof servers.type !== "string" ? servers : null;
+}
+
 export function mergeOpencodeJson(existing: string | null, name: string, server: StdioServer): string {
   const root = parseForMerge(existing, "opencode");
-  const mcp = isRecord(root.mcp) ? { ...root.mcp } : {};
+  const mcp: Record<string, unknown> = isRecord(root.mcp) ? { ...root.mcp } : {};
+  const v2 = opencodeV2Servers(mcp);
 
-  mcp[name] = {
+  const entry = {
     type: "local",
     command: [server.command, ...server.args],
-    enabled: true,
+    // v2 has `disabled` instead, and an entry is on unless it says otherwise.
+    ...(v2 ? {} : { enabled: true }),
     ...(server.env && Object.keys(server.env).length ? { environment: server.env } : {}),
   };
+  if (v2) mcp.servers = { ...v2, [name]: entry };
+  else mcp[name] = entry;
 
   return `${JSON.stringify(
     { $schema: "https://opencode.ai/config.json", ...root, mcp },
@@ -246,10 +260,20 @@ export function removeFromMcpJson(existing: string | null, name: string): string
 export function removeFromOpencodeJson(existing: string | null, name: string): string | null {
   if (!existing?.trim()) return null;
   const root = safeJson(existing);
-  if (!isRecord(root.mcp) || !(name in root.mcp)) return null;
+  if (!isRecord(root.mcp)) return null;
+  // Both places: an entry written before the file moved to v2 is still ours.
+  const v2 = opencodeV2Servers(root.mcp);
+  const inV2 = v2 !== null && name in v2;
+  const inLegacy = name !== "servers" && name in root.mcp;
+  if (!inV2 && !inLegacy) return null;
 
-  const mcp = { ...root.mcp };
-  delete mcp[name];
+  const mcp: Record<string, unknown> = { ...root.mcp };
+  if (v2) {
+    const servers = omit(v2, name);
+    if (Object.keys(servers).length) mcp.servers = servers;
+    else delete mcp.servers;
+  }
+  if (inLegacy) delete mcp[name];
 
   const next = Object.keys(mcp).length ? { ...root, mcp } : omit(root, "mcp");
   return `${JSON.stringify(next, null, 2)}\n`;

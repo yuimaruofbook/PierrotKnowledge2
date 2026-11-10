@@ -4,6 +4,7 @@ pub mod app;
 pub mod binary;
 pub mod connect_types;
 pub mod fuzzy;
+pub mod html;
 pub mod js_compat;
 pub mod mcp_types;
 pub mod messages;

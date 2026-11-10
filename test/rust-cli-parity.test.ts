@@ -560,7 +560,7 @@ describe.skipIf(!ready)("Rust okf CLI parity", () => {
     expect(await compare(INSTALL_STEPS)).toBeGreaterThan(4);
   }, 120_000);
 
-  test("serve is handed to Bun and answers on stdio like the TS CLI", async () => {
+  test("serve answers on stdio like the TS CLI", async () => {
     const hello = `${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}\n`;
     const one = { args: ["serve"], env: { OKF_BUNDLE: "<BUNDLE>" } };
     const [expected, actual] = await Promise.all([runSide(ts, one, hello), runSide(rust, one, hello)]);
@@ -569,25 +569,40 @@ describe.skipIf(!ready)("Rust okf CLI parity", () => {
     expect(actual.stdout).toContain('"tools"');
   }, 60_000);
 
-  test("without Bun, ui and serve say so and exit 1 (as the launchers do)", async () => {
+  test("ui and serve run without Bun on PATH", async () => {
     const empty = join(sandbox, "empty-path");
     await mkdir(empty, { recursive: true });
-    for (const command of ["ui", "serve"]) {
-      const proc = Bun.spawn([RUST_CLI, command, "--bundle", rust.bundle], {
-        cwd: ROOT,
-        env: { ...envFor(rust, undefined), PATH: empty, Path: empty },
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      const [stdout, stderr, code] = await Promise.all([
-        new Response(proc.stdout).text(),
-        new Response(proc.stderr).text(),
-        proc.exited,
-      ]);
-      expect(stdout).toBe("");
-      expect(stderr.trim()).toBe("Bun が見つかりません。https://bun.sh からインストールしてください。");
-      expect(code).toBe(1);
+    const env = { ...envFor(rust, undefined), PATH: empty, Path: empty };
+
+    const serve = Bun.spawn([RUST_CLI, "serve", "--bundle", rust.bundle], {
+      cwd: ROOT,
+      env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "ignore",
+    });
+    serve.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })}
+`);
+    serve.stdin.end();
+    expect(await new Response(serve.stdout).text()).toContain('"tools"');
+    expect(await serve.exited).toBe(0);
+
+    // ui is a server: it is up once it prints its tokenised URL.
+    const ui = Bun.spawn([RUST_CLI, "ui", "--bundle", rust.bundle, "--open", "false"], {
+      cwd: ROOT,
+      env,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const reader = ui.stdout.getReader();
+    let printed = "";
+    while (!/token=[0-9a-f]{48}/.test(printed)) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      printed += new TextDecoder().decode(value);
     }
+    ui.kill();
+    expect(printed).toMatch(/http:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{48}/);
   }, 30_000);
 });

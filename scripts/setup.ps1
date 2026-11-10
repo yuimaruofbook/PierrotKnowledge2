@@ -31,8 +31,8 @@
   Build only the headless MCP server and skip the interface entirely.
 
   Headless is the mode to run when an agent is the only user: the same
-  Workspace, without a page. Measured on 300 notes it settles around 85 MB,
-  against 135 MB with the interface open.
+  Workspace, without a page. The Rust build settles around 9 MB (15 MB on
+  1,500 notes), against about 60 MB with the interface open in a tab.
 
   Implies -NoShortcut. Combine with -Connect to register it with your agents.
 
@@ -161,7 +161,103 @@ function Assert-LastExit {
     throw "$What に失敗しました (終了コード $LASTEXITCODE)"
 }
 
+# --- Rust build: what lets this install run without Bun --------------------
+
+<#
+  The release carries the built interface and icon; the two executables come
+  from cargo when a Rust toolchain is here, or else from this version's GitHub
+  release, used only if they match the digest GitHub computed and start on
+  this machine. Any failure falls back to the Bun path below, so setup never
+  needs more than it did before. OKF_BUILD=bun forces that path.
+#>
+function Install-NativeBinary {
+    param([Parameter(Mandatory)] [string] $Bin, [Parameter(Mandatory)] [string] $Dir)
+
+    $target = Join-Path $ProjectRoot "build\$Dir\$Bin.exe"
+    $staged = Join-Path $ProjectRoot "build\$Dir\$Bin.download.exe"
+    $cargoToml = Join-Path $ProjectRoot 'rust\Cargo.toml'
+    $savedPreference = $ErrorActionPreference
+    try {
+        New-Item -ItemType Directory -Force (Split-Path $target) | Out-Null
+        if ((Get-Command cargo -ErrorAction SilentlyContinue) -and (Test-Path $cargoToml)) {
+            # cargo reports progress on stderr, which 5.1 turns into an error under 'Stop'.
+            $ErrorActionPreference = 'Continue'
+            & cargo build --release --manifest-path $cargoToml --bin $Bin | Out-Host
+            $ErrorActionPreference = $savedPreference
+            if ($LASTEXITCODE -ne 0) { throw 'cargo build に失敗しました' }
+            Copy-Item (Join-Path $ProjectRoot "rust\target\release\$Bin.exe") $staged -Force
+        } else {
+            $version = (Get-Content (Join-Path $ProjectRoot 'package.json') -Raw | ConvertFrom-Json).version
+            # An x64 PowerShell on ARM reports AMD64 for itself and ARM64 here.
+            $plat = if ("$env:PROCESSOR_ARCHITEW6432 $env:PROCESSOR_ARCHITECTURE" -match 'ARM64') { 'windows-arm64' } else { 'windows-x64' }
+            $name = "$Bin-$plat.exe"
+            $asset = $null
+            # Releases have been tagged both V0.5.2 and v0.5.2.
+            foreach ($tag in @("V$version", "v$version")) {
+                try {
+                    $release = Invoke-RestMethod -TimeoutSec 15 -Headers @{ Accept = 'application/vnd.github+json' } `
+                        -Uri "https://api.github.com/repos/yuimaruofbook/PierrotKnowledge2/releases/tags/$tag"
+                    $asset = $release.assets | Where-Object { $_.name -eq $name -and $_.digest } | Select-Object -First 1
+                    if ($asset) { break }
+                } catch { }
+            }
+            if (-not $asset) { throw "リリース $version に $name がありません" }
+            # 5.1's progress bar slows the download itself several-fold.
+            $ProgressPreference = 'SilentlyContinue'
+            Invoke-WebRequest -UseBasicParsing -Uri $asset.browser_download_url -OutFile $staged
+            $hash = (Get-FileHash -Algorithm SHA256 $staged).Hash.ToLower()
+            if ("sha256:$hash" -ne "$($asset.digest)".ToLower()) {
+                throw "$name のハッシュが一致しません（破損または改ざんの可能性）"
+            }
+        }
+
+        # The digest proves it is the published file, not that it runs here.
+        $probe = if ($Bin -eq 'okf') { "`"$staged`" help" } else { "`"$staged`" <nul" }
+        $savedBundle = $env:OKF_BUNDLE
+        $env:OKF_BUNDLE = ''
+        & cmd /c "$probe >nul 2>nul"
+        $env:OKF_BUNDLE = $savedBundle
+        if ($LASTEXITCODE -ne 0) { throw "$Bin がこのマシンで起動しません" }
+
+        # A running copy cannot be overwritten but can be renamed: it keeps
+        # working, and the next start gets the new build.
+        try {
+            Move-Item $staged $target -Force
+        } catch {
+            $parked = "$target.old"
+            Remove-Item $parked -Force -ErrorAction SilentlyContinue
+            Move-Item $target $parked -Force
+            Move-Item $staged $target -Force
+        }
+        return $target
+    } catch {
+        $ErrorActionPreference = $savedPreference
+        Remove-Item $staged -Force -ErrorAction SilentlyContinue
+        Write-Note "Rust 版の $Bin は使えません（$($_.Exception.Message)）"
+        return $null
+    }
+}
+
+$Okf = $null
+$Native = $false
+if ($env:OKF_BUILD -ne 'bun') {
+    Write-Step 'Installing the Rust build (no Bun needed)'
+    $viewReady = Test-Path (Join-Path $ProjectRoot 'src\mainview\dist\index.html')
+    if ($Headless -or $viewReady) {
+        $Okf = Install-NativeBinary -Bin 'okf' -Dir 'cli'
+        # Agents spawn the headless server by path; without it their configs
+        # would name `bun run`, which a Bun-free machine cannot start.
+        $Mcp = if ($Okf) { Install-NativeBinary -Bin 'okf-mcp' -Dir 'headless' }
+        $Native = [bool] ($Okf -and $Mcp)
+    } else {
+        Write-Note '画面のビルドが同梱されていないため、Bun で組み立てます'
+    }
+    if ($Native) { Write-Ok "Rust: $Okf" }
+}
+
 # --- Bun -------------------------------------------------------------------
+
+if (-not $Native) {
 
 function Get-BunPath {
     $command = Get-Command bun -ErrorAction SilentlyContinue
@@ -206,6 +302,8 @@ if (-not $Bun) {
 
 Write-Ok "Bun: $Bun ($(& $Bun --version))"
 
+} # -not $Native
+
 # --- what the shortcut will start --------------------------------------------
 
 <#
@@ -232,6 +330,10 @@ function Get-LaunchMode {
 
 # --- dependencies ----------------------------------------------------------
 
+$LaunchMode = Get-LaunchMode -Headless:$Headless
+
+# The Rust build needs none of this: the release ships the page and the icon.
+if (-not $Native) {
 Write-Step 'Installing dependencies'
 Push-Location $ProjectRoot
 try {
@@ -250,8 +352,6 @@ try {
     Write-Ok 'assets/icon.ico'
 
     # --- build -------------------------------------------------------------
-
-    $LaunchMode = Get-LaunchMode -Headless:$Headless
 
     if ($Headless) {
         Write-Step 'Building the headless MCP server only (-Headless)'
@@ -290,6 +390,7 @@ try {
 } finally {
     Pop-Location
 }
+} # -not $Native
 
 # --- starter bundle --------------------------------------------------------
 
@@ -527,6 +628,11 @@ Write-Ok "Bundle location: $BundlePath"
 
 Push-Location $ProjectRoot
 try {
+    if ($Native) {
+        & $Okf init-bundle $BundlePath
+        Assert-LastExit -What 'バンドルの初期化' -Retry "& `"$Okf`" init-bundle `"$BundlePath`"" `
+            -Hints @('別の場所に作るなら:  .\SETUP.bat -BundlePath "C:\okf-wiki"')
+    } else {
     & $Bun run scripts/init-bundle.ts $BundlePath
     Assert-LastExit -What 'バンドルの初期化' `
         -Retry "bun run scripts/init-bundle.ts `"$BundlePath`"" `
@@ -534,6 +640,7 @@ try {
             'node_modules が壊れている場合は bun install を実行し直してください',
             '別の場所に作るなら:  .\SETUP.bat -BundlePath "C:\okf-wiki"'
         )
+    }
 } finally {
     Pop-Location
 }
@@ -606,7 +713,11 @@ $savedPreference = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 Push-Location $ProjectRoot
 try {
-    $mcpConfig = & $Bun run src/bun/cli/main.ts mcp-config --bundle "$BundlePath" 2>$null
+    $mcpConfig = if ($Native) {
+        & $Okf mcp-config --bundle "$BundlePath" 2>$null
+    } else {
+        & $Bun run src/bun/cli/main.ts mcp-config --bundle "$BundlePath" 2>$null
+    }
 } finally {
     Pop-Location
     $ErrorActionPreference = $savedPreference
@@ -662,8 +773,12 @@ if ($Connect) {
             $savedPreference = $ErrorActionPreference
             $ErrorActionPreference = 'Continue'
             try {
-                $output = (& $Bun run scripts/connect-agent.ts $runtime.Id $BundlePath 2>&1 |
-                    ForEach-Object { "$_" }) -join ' '
+                $lines = if ($Native) {
+                    & $Okf connect-agent $runtime.Id $BundlePath 2>&1
+                } else {
+                    & $Bun run scripts/connect-agent.ts $runtime.Id $BundlePath 2>&1
+                }
+                $output = ($lines | ForEach-Object { "$_" }) -join ' '
                 $ok = ($LASTEXITCODE -eq 0)
             } finally {
                 $ErrorActionPreference = $savedPreference

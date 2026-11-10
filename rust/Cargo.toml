@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "Rust port of the okf-wiki shared layer (OKF v0.2 helpers)"
 license = "MIT"
+# Inside src/ on purpose: updaters before 0.9.0 replace rust/src and this file,
+# and nothing else under rust/.
+build = "src/build.rs"
 
 [lib]
 name = "okf"
@@ -14,6 +17,7 @@ chrono = { version = "0.4.45", default-features = false, features = ["std", "clo
 ctrlc = { version = "3.5.2", features = ["termination"] }
 fancy-regex = "0.19.2"
 flate2 = "1.1.10"
+getrandom = "0.3"
 icu_collator = "2.3.1"
 icu_locale = "2.3.1"
 icu_normalizer = "2.3.0"
@@ -25,8 +29,16 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip", "preserve_order"] }
 sha2 = "0.11.0"
 sys-locale = "0.3.2"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 ureq = "3.4.2"
 yaml-rust2 = "0.13.0"
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# Smaller, faster binaries for what ships. No `panic = "abort"`: the MCP server
+# catches a tool's panic (`catch_unwind` in mcp/stdio.rs) and keeps serving.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true

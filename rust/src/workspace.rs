@@ -79,8 +79,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-/// How long a self-inflicted write suppresses watcher events for that path.
-/// Long enough to outlast the OS event, short enough that a genuine external
+/// How long a self-inflicted write suppresses watcher events for that path,
+/// counted from the first poll after the write: a slow request must not use up
+/// the grace before its own event is even looked at. Long enough to outlast the OS event, short enough that a genuine external
 /// edit moments later is still seen.
 const SELF_WRITE_GRACE: Duration = Duration::from_millis(750);
 
@@ -346,7 +347,8 @@ pub struct Workspace {
     skill_space: Option<SkillSpace>,
     loop_space: Option<LoopSpace>,
     watcher: Option<BundleWatcher>,
-    self_writes: HashMap<String, Instant>,
+    /// `None` until the first poll after the write starts its grace.
+    self_writes: HashMap<String, Option<Instant>>,
 }
 
 impl Workspace {
@@ -444,7 +446,7 @@ impl Workspace {
     }
 
     fn mark_self_write(&mut self, rel_path: &str) {
-        self.self_writes.insert(rel_path.to_string(), Instant::now());
+        self.self_writes.insert(rel_path.to_string(), None);
         if let Some(watcher) = self.watcher.as_mut() {
             watcher.ignore_next(rel_path);
         }
@@ -461,7 +463,7 @@ impl Workspace {
     }
 
     fn is_self_write(&mut self, rel_path: &str) -> bool {
-        let Some(at) = self.self_writes.get(rel_path).copied() else {
+        let Some(Some(at)) = self.self_writes.get(rel_path).copied() else {
             return false;
         };
         if at.elapsed() > SELF_WRITE_GRACE {
@@ -475,6 +477,10 @@ impl Workspace {
     /// requests.
     pub fn poll_watcher(&mut self) {
         let Some(watcher) = self.watcher.as_mut() else { return };
+        let now = Instant::now();
+        for at in self.self_writes.values_mut() {
+            at.get_or_insert(now);
+        }
         let paths = watcher.poll();
         if !paths.is_empty() {
             self.handle_external_change(&paths);
@@ -1042,6 +1048,39 @@ impl Workspace {
         let result = run_base(&value, &rows, &RunOptions { view, limit, now }).map_err(OkfError::message)?;
         let markdown = render_base_markdown(&result);
         Ok((result, markdown))
+    }
+
+    /// The interface's view of a base: its views, plus one view's result or
+    /// why it failed. Failures are in the answer, not raised.
+    pub fn base_view(&mut self, path: &str, view: Option<&str>) -> Value {
+        let value = match self.read_base_text(path).map(|t| parse_yaml(&t)) {
+            Ok(Some(value)) => value,
+            Ok(None) => return serde_json::json!({ "views": [], "error": "the content is not valid YAML" }),
+            Err(error) => return serde_json::json!({ "views": [], "error": error.to_string() }),
+        };
+        let views: Vec<Value> = list_views(&value)
+            .into_iter()
+            .map(|(name, kind)| serde_json::json!({ "name": name, "type": kind }))
+            .collect();
+        match self.base_query(path, view, None) {
+            Ok((result, _)) => serde_json::json!({ "views": views, "result": result.to_map() }),
+            Err(error) => serde_json::json!({ "views": views, "error": error.to_string() }),
+        }
+    }
+
+    /// The first `<stem>.canvas`, `<stem>-2.canvas`, ... free in the canvases folder.
+    pub fn unique_canvas_path(&self, stem: &str) -> Result<String> {
+        let bundle = self.require_bundle()?;
+        let wiki = &bundle.paths.wiki_dir;
+        let dir = if wiki.is_empty() { CANVASES_DIR.to_string() } else { format!("{wiki}/{CANVASES_DIR}") };
+        for n in 1.. {
+            let suffix = if n == 1 { String::new() } else { format!("-{n}") };
+            let path = format!("{dir}/{stem}{suffix}.canvas");
+            if !bundle.exists(&path)? {
+                return Ok(path);
+            }
+        }
+        unreachable!("an unbounded search always finds a free name")
     }
 
     /// Validate, then write exactly the text given: unknown keys and the

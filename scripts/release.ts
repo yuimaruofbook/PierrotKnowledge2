@@ -1,7 +1,8 @@
 /**
  * Build the archive that goes on a GitHub release.
  *
- * Deliberately source-only. The archives uploaded so far were 285 MB, of which
+ * Source plus the built page and icon, nothing compiled per platform (the
+ * Rust binaries are attached separately). The archives uploaded so far were 285 MB, of which
  * 504 MB uncompressed was `node_modules` and 305 MB was `build/` — both of
  * which every machine regenerates from `bun install` and the build scripts. What
  * actually differs between releases is `src/`, which is under a megabyte.
@@ -72,6 +73,20 @@ if (!/^\d+\.\d+\.\d+$/.test(version)) {
   console.error(`version が semver ではありません: ${version}`);
   console.error("リリースのタグと版は x.y.z 形式にしてください（更新の新旧判定に使います）。");
   process.exit(2);
+}
+
+/**
+ * The built page and icon travel inside `src/` and `assets/`, built fresh
+ * here: with them and the Rust binaries the release workflow attaches, an
+ * install runs without Bun. A stale page from an earlier build would ship
+ * silently, so both are rebuilt every time rather than copied as found.
+ */
+for (const step of [["run", "build:view"], ["run", "scripts/make-icon.ts"]]) {
+  const built = Bun.spawnSync([process.execPath, ...step], { cwd: ROOT, stdout: "inherit", stderr: "inherit" });
+  if (built.exitCode !== 0) {
+    console.error(`ビルドに失敗しました: bun ${step.join(" ")}`);
+    process.exit(1);
+  }
 }
 
 const name = `PierrotKnowledge2-${version}`;

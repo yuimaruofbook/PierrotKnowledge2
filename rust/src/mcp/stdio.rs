@@ -138,6 +138,50 @@ pub fn handle_line(workspace: &mut Workspace, line: &[u8]) -> Option<Value> {
     }
 }
 
+/// The headless MCP server on this process's stdio (`okf-mcp`, `okf serve`).
+///
+/// Diagnostics go to stderr only: stdout carries the JSON-RPC stream. Watching
+/// keeps a long agent session consistent with edits made in the UI meanwhile.
+pub fn run_standalone(bundle_path: Option<&str>) {
+    use crate::workspace::WorkspaceOptions;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    let mut workspace = Workspace::new(WorkspaceOptions {
+        watch: Some(true),
+        on_error: Some(std::rc::Rc::new(|message| eprintln!("[okf-wiki mcp] {message}"))),
+        ..Default::default()
+    });
+    match bundle_path.filter(|p| !p.is_empty()) {
+        Some(path) => match workspace.open(path) {
+            Ok(info) => eprintln!("[okf-wiki mcp] opened {} ({} concepts)", info.root, info.concept_count),
+            Err(error) => eprintln!("[okf-wiki mcp] failed to open {path}: {error}"),
+        },
+        None => eprintln!("[okf-wiki mcp] no OKF_BUNDLE set — call the open_bundle tool first"),
+    }
+
+    // SIGINT/SIGTERM only raise a flag; the loop notices it within a tick and
+    // closes the workspace (WAL checkpoint) before exiting.
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    if let Err(error) = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst)) {
+        eprintln!("[okf-wiki mcp] cannot install signal handler: {error}");
+    }
+
+    let stdout = std::io::stdout();
+    run_stdio_server(
+        &mut workspace,
+        std::io::stdin(),
+        |line| {
+            let mut out = stdout.lock();
+            // A closed pipe means the client is gone; the read side ends too.
+            let _ = out.write_all(line.as_bytes()).and_then(|()| out.flush());
+        },
+        &stop,
+    );
+    workspace.close();
+}
+
 /// How often the loop wakes to apply file-watcher events while idle.
 const IDLE_TICK: Duration = Duration::from_millis(20);
 

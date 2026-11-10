@@ -147,22 +147,41 @@ pub fn merge_mcp_json(existing: Option<&str>, name: &str, server: &StdioServer) 
     Ok(pretty_with_newline(Value::Object(root)))
 }
 
+/// opencode's v2 layout keeps servers under `mcp.servers` instead of directly
+/// under `mcp`. A legacy server that happened to be called "servers" would
+/// carry a `type`.
+fn opencode_v2_servers(mcp: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    record(mcp.get("servers")).filter(|s| !s.get("type").is_some_and(Value::is_string))
+}
+
 /// Merge into an opencode config: key `mcp`, `"type": "local"`, one command
-/// array, `environment` instead of `env`.
+/// array, `environment` instead of `env`. A file already in the v2 layout
+/// gets the entry under `mcp.servers`, where `enabled` is not a field.
 pub fn merge_opencode_json(existing: Option<&str>, name: &str, server: &StdioServer) -> MergeResult {
     let root = parse_for_merge(existing, "opencode")?;
     let mut mcp = record(root.get("mcp")).cloned().unwrap_or_default();
+    let v2 = opencode_v2_servers(&mcp).cloned();
 
     let mut command = vec![Value::String(server.command.clone())];
     command.extend(server.args.iter().map(|a| Value::String(a.clone())));
     let mut entry = Map::new();
     entry.insert("type".into(), Value::String("local".into()));
     entry.insert("command".into(), Value::Array(command));
-    entry.insert("enabled".into(), Value::Bool(true));
+    if v2.is_none() {
+        entry.insert("enabled".into(), Value::Bool(true));
+    }
     if let Some(env) = env_object(server) {
         entry.insert("environment".into(), env);
     }
-    mcp.insert(name.to_string(), Value::Object(entry));
+    match v2 {
+        Some(mut servers) => {
+            servers.insert(name.to_string(), Value::Object(entry));
+            mcp.insert("servers".into(), Value::Object(servers));
+        }
+        None => {
+            mcp.insert(name.to_string(), Value::Object(entry));
+        }
+    }
 
     // `{ $schema, ...root, mcp }`: a key already present keeps its position.
     let mut out = Map::new();
@@ -429,8 +448,20 @@ pub fn remove_from_opencode_json(existing: Option<&str>, name: &str) -> Option<S
     let text = existing.filter(|t| !js_trim(t).is_empty())?;
     let mut root = safe_json(Some(text));
     let mut mcp = record(root.get("mcp"))?.clone();
-    mcp.get(name)?;
-    mcp.shift_remove(name);
+    // Both places: an entry written before the file moved to v2 is still ours.
+    let mut found = false;
+    if let Some(mut servers) = opencode_v2_servers(&mcp).cloned() {
+        found |= servers.shift_remove(name).is_some();
+        if servers.is_empty() {
+            mcp.shift_remove("servers");
+        } else {
+            mcp.insert("servers".into(), Value::Object(servers));
+        }
+    }
+    found |= name != "servers" && mcp.shift_remove(name).is_some();
+    if !found {
+        return None;
+    }
 
     if mcp.is_empty() {
         root.shift_remove("mcp");
@@ -571,6 +602,22 @@ mod tests {
         assert_eq!(entry["environment"]["OKF_BUNDLE"], "C:/notes");
         assert!(entry.get("env").is_none());
         assert_eq!(v["$schema"], "https://opencode.ai/config.json");
+    }
+
+    #[test]
+    fn opencode_v2_layout_is_followed_when_the_file_uses_it() {
+        let existing = r#"{"mcp":{"servers":{"other":{"type":"local","command":["x"]}}}}"#;
+        let merged = merge_opencode_json(Some(existing), "okf-wiki", &server()).unwrap();
+        let v = json(&merged);
+        assert_eq!(v["mcp"]["servers"]["okf-wiki"]["type"], "local");
+        assert!(v["mcp"]["servers"]["okf-wiki"].get("enabled").is_none());
+        assert!(v["mcp"].get("okf-wiki").is_none());
+        let after = json(&remove_from_opencode_json(Some(&merged), "okf-wiki").unwrap());
+        assert_eq!(after["mcp"]["servers"], json(r#"{"other":{"type":"local","command":["x"]}}"#));
+        assert_eq!(remove_from_opencode_json(Some(existing), "okf-wiki"), None);
+        // An entry from before the file moved to v2 goes too, and no empty shell stays.
+        let mixed = r#"{"keep":1,"mcp":{"okf-wiki":{"type":"local"},"servers":{"okf-wiki":{"type":"local"}}}}"#;
+        assert_eq!(json(&remove_from_opencode_json(Some(mixed), "okf-wiki").unwrap()), json(r#"{"keep":1}"#));
     }
 
     #[test]

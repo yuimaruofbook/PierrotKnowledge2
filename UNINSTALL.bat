@@ -69,9 +69,8 @@ where bun >nul 2>&1
 if not errorlevel 1 goto run_source
 set "BUN=%USERPROFILE%\.bun\bin\bun.exe"
 if exist "%BUN%" goto run_source
-rem Without Bun only the compiled CLI is left, and it may not ask. Say so
-rem rather than let a promised question silently become a plan and nothing.
-if not "%MODE%"==" --apply" echo   Bun not found: showing the plan only. Re-run with -Apply to carry it out.
+rem Without Bun the compiled CLI is left; the Rust build asks as Bun does, and
+rem an older build without --confirm only prints the plan, deleting nothing.
 call "%~dp0PierrotKnowledge2.bat" Uninstall%MODE%%ARGS%
 set "EXITCODE=%ERRORLEVEL%"
 goto done

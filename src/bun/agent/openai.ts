@@ -34,6 +34,8 @@ export interface ChatMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
   tool_calls?: ChatToolCall[];
+  /** DeepSeek / Kimi thinking modes: must be replayed with the tool-call turn, or they answer 400. */
+  reasoning_content?: string;
   tool_call_id?: string;
   name?: string;
 }
@@ -59,6 +61,9 @@ export interface ChatOptions {
 }
 
 export class OpenAiCompatClient {
+  /** Set once the server has refused `temperature`. */
+  private noTemperature = false;
+
   constructor(
     /** Base URL including `/v1`, e.g. `http://localhost:11434/v1`. */
     private readonly baseUrl: string,
@@ -96,13 +101,23 @@ export class OpenAiCompatClient {
       stream: false,
     };
     if (options.tools?.length) body.tools = options.tools;
-    if (options.temperature !== undefined) body.temperature = options.temperature;
+    if (options.temperature !== undefined && !this.noTemperature) body.temperature = options.temperature;
 
-    const payload = (await this.fetchJson("/chat/completions", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      ...(options.signal ? { signal: options.signal } : {}),
+    const post = () =>
+      this.fetchJson("/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+    // Current Claude and OpenAI reasoning models answer 400 to a sampling
+    // parameter: on a 400 resend without it and stop offering it.
+    const payload = (await post().catch((cause) => {
+      const reason = errorMessage(cause);
+      if (body.temperature === undefined || !reason.includes("HTTP 400") || !/temperature/i.test(reason)) throw cause;
+      this.noTemperature = true;
+      delete body.temperature;
+      return post();
     })) as {
       choices?: Array<{ message?: ChatMessage; finish_reason?: string }>;
       usage?: ChatUsage;
@@ -116,6 +131,7 @@ export class OpenAiCompatClient {
         role: "assistant",
         content: typeof message?.content === "string" ? message.content : "",
         ...(message?.tool_calls?.length ? { tool_calls: message.tool_calls } : {}),
+        ...(typeof message?.reasoning_content === "string" ? { reasoning_content: message.reasoning_content } : {}),
       },
       finishReason: choice?.finish_reason ?? "stop",
       usage: payload.usage ?? {},

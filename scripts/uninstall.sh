@@ -25,6 +25,8 @@ if ! command -v bun >/dev/null 2>&1; then
   # uninstalling may be in exactly that shell.
   if [ -x "$HOME/.bun/bin/bun" ]; then
     export PATH="$HOME/.bun/bin:$PATH"
+  elif [ -x build/cli/okf ]; then
+    exec build/cli/okf uninstall "$@"
   else
     echo "Bun が見つかりません。" >&2
     echo "アプリのフォルダを削除するだけでもアンインストールはほぼ完了しますが、" >&2

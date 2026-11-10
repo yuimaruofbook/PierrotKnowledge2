@@ -55,6 +55,8 @@ export function normalizeForIndex(text: string): string {
   if (!text) return "";
   return (
     text
+      // Fullwidth Latin/digits and halfwidth katakana must match their ordinary forms.
+      .normalize("NFKC")
       .toLowerCase()
       .replace(CJK_RUN_RE, (run) => ` ${bigrams(run).join(" ")} `)
       // Punctuation becomes a separator, mirroring what unicode61 does when it

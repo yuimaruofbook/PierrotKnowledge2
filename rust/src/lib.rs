@@ -7,14 +7,27 @@
 //! reproduced.
 
 pub mod shared;
+
+/// The built page and icon, compiled in by `build.rs` (empty when not built).
+pub mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
+}
+
+/// The release version (package.json's), compiled in by `build.rs`.
+pub const VERSION: &str = env!("OKF_VERSION");
+pub mod agent;
 pub mod app_paths;
+pub mod connections;
 pub mod okf;
 pub mod platform;
+pub mod rpc;
 pub mod rag;
 pub mod state;
 pub mod cli;
 pub mod connect;
 pub mod mcp;
+pub mod native_binary;
+pub mod ui_server;
 pub mod uninstall;
 pub mod update;
 pub mod update_zip;

@@ -177,7 +177,13 @@ export const CONNECT_TARGETS: readonly ConnectTarget[] = [
     label: "opencode",
     kind: "mcp-host",
     format: "opencode-json",
-    configPath: () => join(xdgConfig(), "opencode", "opencode.json"),
+    // An existing opencode.jsonc is the user's config: writing a second file
+    // beside it would leave opencode to pick between them.
+    configPath: () => {
+      const json = join(xdgConfig(), "opencode", "opencode.json");
+      const jsonc = join(xdgConfig(), "opencode", "opencode.jsonc");
+      return !existsSync(json) && existsSync(jsonc) ? jsonc : json;
+    },
     probe: "opencode",
     note: "~/.config/opencode/opencode.json の mcp に追記します。",
   },
@@ -274,9 +280,10 @@ export const CONNECT_TARGETS: readonly ConnectTarget[] = [
     label: "Strata",
     kind: "model-server",
     configPath: () => registryPathFor("runtimes.json"),
+    probe: "strata",
     endpoint: "http://127.0.0.1:8080/v1",
     apiKeyEnv: "STRATA_API_KEY",
-    note: "START-HERE.bat で Strata を起動してください。--api-key を付けて起動した場合は、その値を環境変数 STRATA_API_KEY に設定します。llama.cpp と同じ 8080 番を使うため、同時には起動できません。",
+    note: "strata launch で Strata を起動してください（デスクトップ版はアプリを開くだけです）。API キーが有効な場合は strata launch --show-key で表示される値を環境変数 STRATA_API_KEY に設定します。llama.cpp と同じ 8080 番を使うため、同時には起動できません（--port で変更できます）。",
   },
   {
     // unsloth.ai/docs/basics/api: an authenticated OpenAI-compatible API on
@@ -300,7 +307,7 @@ export const CONNECT_TARGETS: readonly ConnectTarget[] = [
     kind: "mcp-host",
     format: "mcp-json",
     configPath: () => registryPathFor("strata-mcp.json"),
-    note: "strata-mcp.json を作ります。run-<model>.bat の serve/server.py の行に --mcp-config <このファイル> を追加し、Strata を再起動してください。チャット画面のみで使えます。",
+    note: "strata-mcp.json を作ります。Strata のサーバーを --mcp-config <このファイル> 付きで起動するか、中身の mcpServers を strata-<model>.json に貼り付けて、Strata を再起動してください。チャット画面で使えます。",
   },
   {
     // Unsloth keeps MCP servers in its SQLite database

@@ -364,7 +364,15 @@ pub fn launcher_paths_for(app_name: &str, desktop_dirs: Option<&[String]>) -> Ve
 
     let desktops: Vec<String> = match desktop_dirs {
         Some(dirs) if !dirs.is_empty() => dirs.to_vec(),
-        _ => desktop_directories(&home),
+        _ => {
+            let mut dirs = desktop_directories(&home);
+            // Known Folder Move puts the Desktop under OneDrive, which is
+            // where setup's shortcut then goes.
+            if let Some(onedrive) = std::env::var("OneDrive").ok().filter(|v| cfg!(windows) && !v.is_empty()) {
+                dirs.push(nodepath::join(&[&onedrive, "Desktop"]));
+            }
+            dirs
+        }
     };
     launcher_paths_on(std::env::consts::OS, &home, app_name, &desktops)
 }

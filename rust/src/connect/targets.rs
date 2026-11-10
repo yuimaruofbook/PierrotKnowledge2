@@ -240,7 +240,16 @@ fn build_targets() -> Vec<ConnectTarget> {
     });
     t.push({
         let mut x = ConnectTarget::new("opencode", "opencode", McpHost, |_| {
-            nodepath::join(&[&xdg_config(), "opencode", "opencode.json"])
+            // An existing opencode.jsonc is the user's config: writing a
+            // second file beside it would leave opencode to pick between them.
+            let dir = nodepath::join(&[&xdg_config(), "opencode"]);
+            let json = nodepath::join(&[&dir, "opencode.json"]);
+            let jsonc = nodepath::join(&[&dir, "opencode.jsonc"]);
+            if !Path::new(&json).exists() && Path::new(&jsonc).exists() {
+                jsonc
+            } else {
+                json
+            }
         });
         x.format = Some(ConfigFormat::OpencodeJson);
         x.probe = Some("opencode".into());
@@ -317,9 +326,9 @@ fn build_targets() -> Vec<ConnectTarget> {
         let mut x = server(
             "strata",
             "Strata",
-            None,
+            Some("strata"),
             "http://127.0.0.1:8080/v1",
-            "START-HERE.bat で Strata を起動してください。--api-key を付けて起動した場合は、その値を環境変数 STRATA_API_KEY に設定します。llama.cpp と同じ 8080 番を使うため、同時には起動できません。",
+            "strata launch で Strata を起動してください（デスクトップ版はアプリを開くだけです）。API キーが有効な場合は strata launch --show-key で表示される値を環境変数 STRATA_API_KEY に設定します。llama.cpp と同じ 8080 番を使うため、同時には起動できません（--port で変更できます）。",
         );
         x.api_key_env = Some("STRATA_API_KEY".into());
         x
@@ -344,7 +353,7 @@ fn build_targets() -> Vec<ConnectTarget> {
             registry_path_for("strata-mcp.json")
         });
         x.format = Some(ConfigFormat::McpJson);
-        x.note = "strata-mcp.json を作ります。run-<model>.bat の serve/server.py の行に --mcp-config <このファイル> を追加し、Strata を再起動してください。チャット画面のみで使えます。".into();
+        x.note = "strata-mcp.json を作ります。Strata のサーバーを --mcp-config <このファイル> 付きで起動するか、中身の mcpServers を strata-<model>.json に貼り付けて、Strata を再起動してください。チャット画面で使えます。".into();
         x
     });
     // Unsloth keeps MCP servers in its SQLite database, which is not ours to
@@ -540,6 +549,19 @@ pub fn server_spec_for(project_root: &str, bundle_root: &str) -> StdioServer {
 
     if Path::new(&binary).exists() {
         return StdioServer { command: binary.replace('\\', "/"), args: Vec::new(), env };
+    }
+    // No TypeScript beside us: a standalone install, where this binary is the
+    // server too (`okf serve`). `okf`, or the name a release gives it
+    // (`okf-windows-x64`); never `okf-mcp`, which takes no command.
+    let is_cli = |stem: &str| {
+        stem == "okf" || ["okf-windows-", "okf-macos-", "okf-linux-"].iter().any(|prefix| stem.starts_with(prefix))
+    };
+    if !Path::new(&nodepath::join(&[project_root, "src", "bun", "mcp", "standalone.ts"])).exists() {
+        if let Some(exe) =
+            std::env::current_exe().ok().filter(|p| p.file_stem().and_then(|s| s.to_str()).is_some_and(is_cli))
+        {
+            return StdioServer { command: exe.to_string_lossy().replace('\\', "/"), args: vec!["serve".into()], env };
+        }
     }
     StdioServer {
         command: bun_command(),

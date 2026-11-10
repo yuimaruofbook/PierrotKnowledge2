@@ -15,10 +15,11 @@ describe("prebuilt native binaries", () => {
     expect(nativePlatform("darwin", "arm64")).toBe("macos-arm64");
     expect(nativePlatform("darwin", "x64")).toBe("macos-x64");
     expect(nativePlatform("linux", "x64")).toBe("linux-x64");
+    expect(nativePlatform("linux", "arm64")).toBe("linux-arm64");
   });
 
   test("a platform nobody builds for has no prebuilt binary", () => {
-    expect(nativePlatform("linux", "arm64")).toBeNull();
+    expect(nativePlatform("win32", "arm64")).toBe("windows-arm64");
     expect(nativePlatform("freebsd", "x64")).toBeNull();
   });
 
