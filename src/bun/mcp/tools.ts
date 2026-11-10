@@ -61,6 +61,12 @@ const LINK_DEPTH = {
     "After retrieval, follow links from the returned files up to 0-2 hops and list those files' one-line descriptions (never bodies) within the same budget (default 0)",
 };
 
+const BUDGET_TOKENS = {
+  type: "number",
+  description:
+    "Budget in estimated tokens instead of characters (overrides budget_chars). Prefer it for Japanese or Chinese text, where a character costs about a token and four Latin letters cost one",
+} as const;
+
 export const TOOLS: readonly ToolDefinition[] = [
   {
     name: "read_map",
@@ -206,16 +212,23 @@ export const TOOLS: readonly ToolDefinition[] = [
     name: "retrieve",
     title: "Retrieve context",
     description:
-      "Retrieve relevant passages assembled for reasoning, with citation anchors and a character budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Works with Japanese, Chinese and English.",
+      "Retrieve relevant passages assembled for reasoning, with citation anchors and a budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Matching is lexical, so put other wordings of the question in queries instead of calling again. Works with Japanese, Chinese and English.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Natural-language question or keywords" },
+        queries: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Other phrasings of the same question: synonyms, or the words the answer is likely written in. Each is searched and the rankings are fused, so one call does the work of several retries",
+        },
         limit: { type: "number", description: "Maximum passages (default 8)" },
         budget_chars: {
           type: "number",
           description: "Character budget across all passages (default 6000)",
         },
+        budget_tokens: BUDGET_TOKENS,
         expand_neighbours: {
           type: "boolean",
           description: "Include adjacent sections for continuity (default false)",
@@ -247,6 +260,7 @@ export const TOOLS: readonly ToolDefinition[] = [
           type: "number",
           description: "Character budget across all passages (overrides the tier default)",
         },
+        budget_tokens: BUDGET_TOKENS,
         limit: { type: "number", description: "Maximum passages before grouping" },
         type: { type: "string", description: "Restrict to one OKF type" },
         tags: { type: "array", items: { type: "string" }, description: "Require all these tags" },
@@ -1061,6 +1075,8 @@ export async function callTool(
         const result = workspace.retrieve(query, {
           ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
           ...(typeof args.budget_chars === "number" ? { budgetChars: args.budget_chars } : {}),
+          ...(typeof args.budget_tokens === "number" ? { budgetTokens: Math.trunc(args.budget_tokens) } : {}),
+          ...(Array.isArray(args.queries) ? { queries: args.queries.filter((q): q is string => typeof q === "string") } : {}),
           ...(args.expand_neighbours === true ? { expandNeighbours: true } : {}),
           ...filtersFrom(args),
           ...range,
@@ -1082,6 +1098,7 @@ export async function callTool(
         const pack = await workspace.contextPack(task, {
           ...(tier ? { tier: tier as ContextTier } : {}),
           ...(typeof args.budget_chars === "number" ? { budgetChars: args.budget_chars } : {}),
+          ...(typeof args.budget_tokens === "number" ? { budgetTokens: Math.trunc(args.budget_tokens) } : {}),
           ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
           ...filtersFrom(args),
           ...range,

@@ -15,7 +15,7 @@ import { mkdir } from "fs/promises";
 import { dirname } from "path";
 import { messages } from "../../shared/messages";
 import { PARA_DIRS, PARA_ORDER, PARA_WEIGHTS, paraOf } from "../../shared/okf/para";
-import { lifecycleWeight } from "../../shared/okf/lifecycle";
+import { lifecycleOf, lifecycleWeight } from "../../shared/okf/lifecycle";
 import type {
   ChunkHit,
   ConceptDocument,
@@ -36,7 +36,7 @@ import {
 } from "../../shared/okf";
 
 /** Bumped when the schema or the normalisation changes; forces a rebuild. */
-const SCHEMA_VERSION = "6";
+const SCHEMA_VERSION = "7";
 
 /**
  * Tags are stored as one delimited string so a document stays a single row.
@@ -149,6 +149,13 @@ export class FtsIndex {
 
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA synchronous = NORMAL");
+    // A schema change starts from nothing: `.rag/` is derived, and an FTS5
+    // table cannot gain a column in place.
+    db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);");
+    const version = db.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | null;
+    if (version?.value !== SCHEMA_VERSION) {
+      db.exec("DROP TABLE IF EXISTS chunks_fts; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS docs;");
+    }
     db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
@@ -158,7 +165,8 @@ export class FtsIndex {
         title  TEXT NOT NULL,
         type   TEXT NOT NULL,
         tags   TEXT NOT NULL DEFAULT '',
-        mtime  REAL NOT NULL
+        mtime  REAL NOT NULL,
+        context TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS chunks (
@@ -177,6 +185,7 @@ export class FtsIndex {
         title_n,
         heading_n,
         text_n,
+        context_n,
         tokenize = 'unicode61 remove_diacritics 2'
       );
     `);
@@ -225,6 +234,12 @@ export class FtsIndex {
     return (this.stmt("SELECT COUNT(*) AS n FROM chunks").get() as { n: number }).n;
   }
 
+  /** The description and tags a document was indexed with. */
+  contextOf(docId: string): string {
+    const row = this.stmt("SELECT context FROM docs WHERE id = ?").get(docId) as { context: string } | undefined;
+    return row?.context ?? "";
+  }
+
   /** Replace every chunk of one document. */
   upsert(doc: ConceptDocument): void {
     this.remove(doc.id);
@@ -234,11 +249,22 @@ export class FtsIndex {
       ? doc.frontmatter.tags.filter((t): t is string => typeof t === "string")
       : [];
 
+    // What the page says it is about, in the author's own summary words.
+    // Indexed with every chunk: a section that never names its subject is
+    // still found by the page's description and tags. Lifecycle tags say what
+    // state a page is in, not what it is about.
+    const description = doc.frontmatter.description;
+    const context = [
+      ...(typeof description === "string" && description.trim() ? [description.trim()] : []),
+      ...tags.filter((tag) => lifecycleOf([tag]) === "none"),
+    ].join(" ");
+
     this.stmt(
-      "INSERT INTO docs (id, path, title, type, tags, mtime) VALUES (?, ?, ?, ?, ?, ?)"
-    ).run(doc.id, doc.relPath, title, doc.frontmatter.type, packTags(tags), doc.mtimeMs);
+      "INSERT INTO docs (id, path, title, type, tags, mtime, context) VALUES (?, ?, ?, ?, ?, ?, ?)"
+    ).run(doc.id, doc.relPath, title, doc.frontmatter.type, packTags(tags), doc.mtimeMs, context);
 
     const titleNormalized = normalizeForIndex(title);
+    const contextNormalized = normalizeForIndex(context);
     const chunks = chunkBody(doc.body);
 
     // A document with an empty body still needs a row, or its title becomes
@@ -249,8 +275,8 @@ export class FtsIndex {
         "INSERT INTO chunks (chunk_id, doc_id, ord, heading_path, text, char_start) VALUES (?, ?, 0, '', '', 0)"
       ).run(id, doc.id);
       this.stmt(
-        "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n) VALUES (?, ?, '', '')"
-      ).run(id, titleNormalized);
+        "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n, context_n) VALUES (?, ?, '', '', ?)"
+      ).run(id, titleNormalized, contextNormalized);
       return;
     }
 
@@ -262,8 +288,8 @@ export class FtsIndex {
          VALUES (?, ?, ?, ?, ?, ?)`
       ).run(id, doc.id, chunk.ord, headingPath, chunk.text, chunk.charStart);
       this.stmt(
-        "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n) VALUES (?, ?, ?, ?)"
-      ).run(id, titleNormalized, normalizeForIndex(headingPath), normalizeForIndex(chunk.text));
+        "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n, context_n) VALUES (?, ?, ?, ?, ?)"
+      ).run(id, titleNormalized, normalizeForIndex(headingPath), normalizeForIndex(chunk.text), contextNormalized);
     }
   }
 
@@ -360,7 +386,7 @@ export class FtsIndex {
       statement = this.handle.prepare(
         `SELECT c.chunk_id, c.doc_id, c.ord, c.heading_path, c.text,
                 d.path, d.title, d.type, d.tags,
-                bm25(chunks_fts, 0, 12.0, 4.0, 1.0) AS score
+                bm25(chunks_fts, 0, 12.0, 4.0, 1.0, 2.0) AS score
            FROM chunks_fts
            JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
            JOIN docs   d ON d.id = c.doc_id

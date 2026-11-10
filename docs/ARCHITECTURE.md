@@ -138,9 +138,9 @@ element/attribute allowlist and a URL-scheme check, behind a restrictive CSP.
 ## Retrieval index
 
 ```
-docs(id, path, title, type, tags, mtime)
+docs(id, path, title, type, tags, mtime, context)
 chunks(chunk_id, doc_id, ord, heading_path, text, char_start)   ← original text
-chunks_fts(chunk_id, title_n, heading_n, text_n)                ← normalised only
+chunks_fts(chunk_id, title_n, heading_n, text_n, context_n)     ← normalised only
 ```
 
 `chunks` holds readable text; `chunks_fts` holds the bigram-expanded projection
@@ -154,11 +154,30 @@ that merely contains `知識` and `識ベ` in unrelated places. `retrieve` uses
 **loose** matching — every token ORed, BM25 ranking — because a question is a
 paraphrase, not a term.
 
+`context` is the page's own `description` and tags, indexed with every one of
+its chunks (weight 2, between heading and body): a section rarely names the
+subject of the page it is in, and the author already wrote that down once.
+
 Loose matching alone would let a passage qualify on one incidental bigram, so
-retrieval additionally requires a passage to share at least two *content*
-tokens with the query. Content excludes pure-hiragana bigrams, which are
-grammar (はど, どう, てい): counting them would make a long question look mostly
+retrieval additionally requires a passage to share *content* tokens with the
+query: half of the query's, up to two. Content excludes any bigram with
+hiragana in it, which is grammar or the seam between a word and its particle
+(はど, てい, 引と): counting those would make a long question look mostly
 unmatched against the very page that answers it.
+
+Three things happen on top of BM25, none of which needs a model:
+
+- **Links.** A page's passages are lifted 5% per inbound link, up to eight.
+  The bundle supplies the counts; the index only ranks.
+- **Phrasings.** `retrieve` accepts other wordings of the question and fuses
+  the rankings by reciprocal rank (k = 60). The agent calling it is already a
+  model, so it writes the paraphrases; the app does not need one to.
+- **Budget.** In characters by default, or in estimated tokens
+  (`budget_tokens`), which is the unit a context window is actually spent in.
+
+`rust/src/rag_eval_tests.rs` holds a small wiki and questions with a known
+right page, and fails when recall@3 or MRR drops below where the ranking was
+last tuned. Change a weight, run it.
 
 ## MCP transport
 

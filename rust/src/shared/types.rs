@@ -440,8 +440,12 @@ pub struct RetrievalResult {
     /// Files reached by `link_depth`; absent when no link was followed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub linked: Option<Vec<LinkedFile>>,
-    /// Characters of passage text (and linked descriptions) returned.
+    /// Passage text (and linked descriptions) returned, in the budget's unit:
+    /// characters, or estimated tokens when `budget_tokens` is set.
     pub used_chars: u64,
+    /// The token budget, when the caller budgeted in tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<i64>,
     /// True when the budget cut the result short.
     pub truncated: bool,
 }

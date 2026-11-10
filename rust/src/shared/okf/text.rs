@@ -212,17 +212,14 @@ pub fn build_match_query(query: &str, mode: QueryMode) -> Option<String> {
 
 /// Whether a token carries meaning rather than grammar.
 ///
-/// A bigram made only of hiragana is almost always particles or inflection
-/// (はど, どう, てい, いる); counting those as evidence makes a long question
-/// look mostly unmatched. Misfires on genuinely hiragana words like 「もの」,
-/// which are low-information anyway.
+/// A bigram with hiragana in it is almost always a particle, an inflection or
+/// the seam between a word and one (はど, てい, 引と, 割の); counting those as
+/// evidence makes a question look unmatched against the page that answers it.
+/// Misfires on hiragana words like 「もの」, which are low-information anyway.
 pub fn is_content_token(token: &str) -> bool {
-    // JS: /^[぀-ゟー]+$/ (an empty token is "content", as in JS).
-    let hiragana_only = !token.is_empty()
-        && token
-            .chars()
-            .all(|c| matches!(c as u32, 0x3040..=0x309f | 0x30fc));
-    !hiragana_only
+    // An empty token is "content", as in the JS.
+    let long_vowels_only = !token.is_empty() && token.chars().all(|c| c == 'ー');
+    !token.chars().any(|c| matches!(c as u32, 0x3040..=0x309f)) && !long_vowels_only
 }
 
 /// A span in UTF-16 code units, `end` exclusive.

@@ -380,6 +380,11 @@ impl Bundle {
         self.concepts.keys().cloned().collect()
     }
 
+    /// How many pages link to each concept, for ranking.
+    pub fn inbound_counts(&self) -> HashMap<String, u32> {
+        self.backlinks.iter().map(|(id, from)| (id.clone(), from.len() as u32)).collect()
+    }
+
     pub fn backlinks_of(&self, id: &str) -> Vec<String> {
         self.backlinks.get(id).cloned().unwrap_or_default()
     }

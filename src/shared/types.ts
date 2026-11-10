@@ -218,8 +218,13 @@ export interface RetrievalResult {
   passages: RetrievedPassage[];
   /** Files reached by `link_depth`; absent when no link was followed. */
   linked?: LinkedFile[];
-  /** Characters of passage text (and linked descriptions) returned. */
+  /**
+   * Passage text (and linked descriptions) returned, in the budget's unit:
+   * characters, or estimated tokens when `budgetTokens` is set.
+   */
   usedChars: number;
+  /** The token budget, when the caller budgeted in tokens. */
+  budgetTokens?: number;
   /** True when the budget cut the result short. */
   truncated: boolean;
 }

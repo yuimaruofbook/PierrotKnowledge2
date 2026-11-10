@@ -62,6 +62,11 @@ export interface ContextPack {
   task: string;
   tier?: ContextTier;
   budgetChars: number;
+  /**
+   * The budget in estimated tokens, when the caller asked in tokens; it then
+   * replaces `budgetChars`, and `usedChars` counts tokens.
+   */
+  budgetTokens?: number;
   files: ContextPackFile[];
   /** Skills that match the task, so procedure travels with context. */
   skills: ContextPackSkill[];
@@ -127,7 +132,7 @@ export function formatContextPack(pack: ContextPack): string {
     `Context pack for: ${pack.task}`,
     [
       pack.tier ? `tier: ${pack.tier}` : "",
-      `budget ${pack.budgetChars} chars`,
+      pack.budgetTokens !== undefined ? `budget ${pack.budgetTokens} tokens` : `budget ${pack.budgetChars} chars`,
       `used ${pack.usedChars}`,
       `${pack.files.length} file(s)`,
     ]
@@ -170,9 +175,8 @@ export function formatContextPack(pack: ContextPack): string {
   }
 
   if (pack.truncated) {
-    lines.push(
-      "_(truncated to fit the budget — raise budget_chars, or read_file the most relevant path)_"
-    );
+    const knob = pack.budgetTokens !== undefined ? "budget_tokens" : "budget_chars";
+    lines.push(`_(truncated to fit the budget — raise ${knob}, or read_file the most relevant path)_`);
   }
 
   return lines.join("\n").trimEnd();

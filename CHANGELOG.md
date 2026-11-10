@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0
+
+### Retrieval
+
+Still one SQLite file, no model and no key. Measured on a small evaluation
+set that now lives in the tests (`rust/src/rag_eval_tests.rs`: 12 pages, 16
+questions with a known right page), recall@3 went from 0.375 to 0.750, and to
+0.938 when the asker supplies other phrasings.
+
+- **A page is found by what it says it is about.** Its `description` and tags
+  are indexed with every one of its sections, so a section that never names
+  its subject is still found by the page's own summary. Lifecycle tags are
+  left out. The index schema is now 7; `.rag/` rebuilds itself once.
+- **Pages the wiki points at rank higher.** Each inbound link lifts a page's
+  passages by 5%, up to eight links: the page that defines a term now beats
+  the pages that merely use it.
+- **`retrieve` takes `queries`**: other phrasings of the same question. Each
+  is searched and the rankings are fused by reciprocal rank, so one call does
+  what took several retries.
+- **`budget_tokens`** on `retrieve` and `context_pack` budgets in estimated
+  tokens instead of characters. A character budget buys three to four times
+  less context in English than in Japanese; a token budget buys the same.
+- **Fewer right answers thrown away.** A bigram that straddles a word and its
+  particle (`引と`, `割の`) no longer counts as something a passage must
+  contain, and a question is asked to match half of its content words (up to
+  two) rather than always two.
+
 ## 0.9.0
 
 ### One binary, one line to install

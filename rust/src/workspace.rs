@@ -26,7 +26,7 @@ use crate::rag::context_pack::{
 };
 use crate::rag::fts::{FtsError, FtsIndex, SearchOptions};
 use crate::rag::retrieve::{retrieve, RetrieveOptions, DEFAULT_BUDGET_CHARS};
-use crate::shared::js_compat::{js_round, js_trim, locale_compare, serialize_js_f64, utf16_len};
+use crate::shared::js_compat::{js_round, js_trim, locale_compare, serialize_js_f64};
 use crate::shared::messages;
 use crate::shared::okf::activity::{
     activity_rel_path, filter_activity, summarize_activity as summarize_rows, ActivityFilter,
@@ -721,6 +721,8 @@ impl Workspace {
     /// `link_depth` is applied here rather than in the index: following a link
     /// needs the concept graph, which only the bundle has.
     pub fn retrieve(&self, query: &str, options: &RetrieveOptions) -> Result<RetrievalResult> {
+        // The index ranks; the bundle knows which pages the others point at.
+        let options = &RetrieveOptions { inbound: self.require_bundle()?.inbound_counts(), ..options.clone() };
         let mut result = retrieve(self.require_fts()?, query, options).map_err(fts_err)?;
 
         let depth = options.link_depth.unwrap_or(0);
@@ -728,7 +730,7 @@ impl Workspace {
             return Ok(result);
         }
 
-        let budget = options.budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS).max(1);
+        let budget = options.budget();
         let mut seen: HashSet<&str> = HashSet::new();
         let start: Vec<String> = result
             .passages
@@ -740,7 +742,7 @@ impl Workspace {
             &start,
             depth,
             budget - result.used_chars as i64,
-            &options.filters,
+            options,
         )?;
         result.linked = Some(reached.linked);
         result.used_chars += reached.used_chars;
@@ -762,8 +764,9 @@ impl Workspace {
         start_ids: &[String],
         depth: i64,
         budget_left: i64,
-        filters: &SearchFilters,
+        options: &RetrieveOptions,
     ) -> Result<FollowedLinks> {
+        let filters = &options.filters;
         let bundle = self.require_bundle()?;
         // Resolved against the ids that exist now, not the `resolved` recorded
         // when each page was parsed: a link written before its target existed
@@ -811,7 +814,7 @@ impl Workspace {
                         .filter(|d| !js_trim(d).is_empty())
                         .map(str::to_string);
                     let cost =
-                        (utf16_len(&title) + description.as_deref().map_or(0, utf16_len)) as u64;
+                        (options.cost(&title) + description.as_deref().map_or(0, |d| options.cost(d))) as u64;
                     if used as i64 + cost as i64 > budget_left {
                         return Ok(FollowedLinks { linked, used_chars: used, truncated: true });
                     }
@@ -851,15 +854,15 @@ impl Workspace {
             None => (DEFAULT_BUDGET_CHARS, 8),
         };
         let budget_chars = options.budget_chars.unwrap_or(default_budget);
+        let sized = RetrieveOptions {
+            budget_chars: Some(budget_chars),
+            limit: Some(options.limit.unwrap_or(default_limit)),
+            ..options.clone()
+        };
+        // In tokens when the caller budgeted in tokens.
+        let budget = sized.budget();
 
-        let retrieval = self.retrieve(
-            task,
-            &RetrieveOptions {
-                budget_chars: Some(budget_chars),
-                limit: Some(options.limit.unwrap_or(default_limit)),
-                ..options.clone()
-            },
-        )?;
+        let retrieval = self.retrieve(task, &sized)?;
 
         let bundle = self.require_bundle()?;
         let files = group_passages(&retrieval, |id| {
@@ -886,8 +889,8 @@ impl Workspace {
                 &options.filters,
             )?;
             for r in found.ranked {
-                let cost = (utf16_len(&r.title) + utf16_len(&r.description)) as i64;
-                if used_chars as i64 + cost > budget_chars {
+                let cost = (sized.cost(&r.title) + sized.cost(&r.description)) as i64;
+                if used_chars as i64 + cost > budget {
                     truncated = true;
                     break;
                 }
@@ -906,6 +909,7 @@ impl Workspace {
             task: task.to_string(),
             tier,
             budget_chars,
+            budget_tokens: options.budget_tokens,
             files,
             skills: found
                 .ranked
@@ -2129,3 +2133,7 @@ mod tests;
 #[cfg(test)]
 #[path = "workspace_features_tests.rs"]
 mod features_tests;
+
+#[cfg(test)]
+#[path = "rag_eval_tests.rs"]
+mod rag_eval_tests;

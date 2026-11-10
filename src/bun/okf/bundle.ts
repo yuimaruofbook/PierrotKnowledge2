@@ -258,6 +258,11 @@ export class Bundle {
     return new Set(this.concepts.keys());
   }
 
+  /** How many pages link to each concept, for ranking. */
+  inboundCounts(): Map<string, number> {
+    return new Map([...this.backlinks].map(([id, from]) => [id, from.length]));
+  }
+
   backlinksOf(id: string): string[] {
     return this.backlinks.get(id) ?? [];
   }

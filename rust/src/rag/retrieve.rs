@@ -11,8 +11,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::rag::fts::{FtsIndex, FtsResult, SearchOptions};
 use crate::shared::js_compat::{
-    from_utf16, index_of16, is_js_space16, slice16, to_utf16, utf16_len,
+    from_utf16, index_of16, is_js_space16, js_trim, slice16, to_utf16, utf16_len,
 };
+use crate::shared::okf::skill::estimate_tokens;
 use crate::shared::okf::{
     chunk_anchor, is_content_token, normalize_for_index, parse_query_terms, QueryMode,
 };
@@ -29,6 +30,16 @@ const MAX_PASSAGES_PER_DOC: usize = 3;
 /// Content tokens a passage must share with the query to be kept.
 const DEFAULT_MIN_CONTENT_MATCHES: i64 = 2;
 
+/// How much each inbound link lifts a page's passages, and how many count.
+/// A page the rest of the wiki points at is more often the one meant than a
+/// page that mentions the same words in passing.
+const LINK_BOOST: f64 = 0.05;
+const MAX_COUNTED_LINKS: u32 = 8;
+
+/// Reciprocal rank fusion's constant: large enough that a passage found by
+/// two phrasings outranks one found first by a single phrasing.
+const RRF_K: f64 = 60.0;
+
 #[derive(Debug, Clone, Default)]
 pub struct RetrieveOptions {
     pub filters: SearchFilters,
@@ -44,9 +55,34 @@ pub struct RetrieveOptions {
     /// `Workspace::retrieve`, which has the link graph; the index-level
     /// function ignores it.
     pub link_depth: Option<i64>,
+    /// Other phrasings of the same question, fused with it by rank.
+    pub queries: Vec<String>,
+    /// Budget in estimated tokens; overrides `budget_chars`. A CJK character
+    /// costs about a token where four Latin letters do, so a character budget
+    /// buys very different amounts of context by language.
+    pub budget_tokens: Option<i64>,
+    /// Inbound link count per concept id, for ranking. Filled in by
+    /// `Workspace::retrieve`, which has the link graph.
+    pub inbound: HashMap<String, u32>,
 }
 
-/// Retrieve passages for a query.
+impl RetrieveOptions {
+    /// The budget, in whichever unit was asked for.
+    pub fn budget(&self) -> i64 {
+        self.budget_tokens.or(self.budget_chars).unwrap_or(DEFAULT_BUDGET_CHARS).max(1)
+    }
+
+    /// What a text costs against the budget: estimated tokens or UTF-16 units.
+    pub fn cost(&self, text: &str) -> usize {
+        if self.budget_tokens.is_some() {
+            estimate_tokens(text) as usize
+        } else {
+            utf16_len(text)
+        }
+    }
+}
+
+/// Retrieve passages for a query, and for any other phrasings of it.
 ///
 /// Chunks are ranked individually but capped per document, which keeps a long
 /// page from crowding out a short one that answers the question better.
@@ -57,7 +93,7 @@ pub fn retrieve(
 ) -> FtsResult<RetrievalResult> {
     let limit = options.limit.unwrap_or(8).clamp(1, 50);
     // An explicit budget is honoured as given.
-    let budget = options.budget_chars.unwrap_or(DEFAULT_BUDGET_CHARS).max(1) as usize;
+    let budget = options.budget() as usize;
 
     let mut filters = SearchFilters::default();
     if let Some(t) = options.filters.r#type.as_ref().filter(|t| !t.is_empty()) {
@@ -74,102 +110,123 @@ pub fn retrieve(
     }
     filters.para_depth = options.filters.para_depth;
 
-    let empty = || RetrievalResult {
-        query: query.to_string(),
-        passages: Vec::new(),
-        linked: None,
-        used_chars: 0,
-        truncated: false,
-    };
+    let mut phrasings: Vec<&str> = vec![query];
+    phrasings.extend(options.queries.iter().map(String::as_str).filter(|q| !js_trim(q).is_empty()));
+    let asked = phrasings.join(" | ");
 
-    // Retrieval takes a question, not a term: loose matching keeps recall up and
-    // lets BM25 decide which passages actually answer it.
-    let hits = index.search_chunks(
-        query,
-        &SearchOptions {
-            filters,
-            limit: Some(limit * 4),
-            group_by_document: false,
-            mode: Some(QueryMode::Loose),
-        },
-    )?;
-    if hits.is_empty() {
-        return Ok(empty());
+    let min_matches = options.min_content_matches.unwrap_or(DEFAULT_MIN_CONTENT_MATCHES);
+    let mut ranked: Vec<Vec<ChunkHit>> = Vec::new();
+    for phrasing in &phrasings {
+        // Retrieval takes a question, not a term: loose matching keeps recall
+        // up and lets BM25 decide which passages actually answer it.
+        let mut hits = index.search_chunks(
+            phrasing,
+            &SearchOptions {
+                filters: filters.clone(),
+                limit: Some(limit * 4),
+                group_by_document: false,
+                mode: Some(QueryMode::Loose),
+            },
+        )?;
+        boost_by_links(&mut hits, &options.inbound);
+        ranked.push(filter_by_coverage(index, hits, phrasing, min_matches)?);
     }
-
-    let relevant = filter_by_coverage(
-        hits,
-        query,
-        options
-            .min_content_matches
-            .unwrap_or(DEFAULT_MIN_CONTENT_MATCHES),
-    );
-    if relevant.is_empty() {
-        return Ok(empty());
-    }
-
-    let selected = select_passages(relevant, limit as usize);
-    let expanded = if options.expand_neighbours {
-        with_neighbours(index, selected)?
-    } else {
-        selected
-    };
+    let relevant = if ranked.len() == 1 { ranked.remove(0) } else { fuse(ranked) };
 
     let mut passages = Vec::new();
-    let mut used_chars = 0usize;
+    let mut used = 0usize;
     let mut truncated = false;
 
-    for hit in expanded {
-        if budget <= used_chars {
-            truncated = true;
-            break;
-        }
-        let remaining = budget - used_chars;
+    if !relevant.is_empty() {
+        let selected = select_passages(relevant, limit as usize);
+        let expanded = if options.expand_neighbours { with_neighbours(index, selected)? } else { selected };
 
-        // Trim at a paragraph edge rather than mid-sentence when the budget bites.
-        let full_len = utf16_len(&hit.text);
-        let text = if full_len <= remaining {
-            hit.text.clone()
-        } else {
-            trim_to_budget(&hit.text, remaining)
-        };
-        let text_len = utf16_len(&text);
-        if text_len < full_len {
-            truncated = true;
-        }
-        if text.is_empty() {
-            truncated = true;
-            break;
-        }
+        for hit in expanded {
+            if budget <= used {
+                truncated = true;
+                break;
+            }
+            let remaining = budget - used;
 
-        let heading = hit.hit.heading_path.last().map_or("", String::as_str);
-        passages.push(RetrievedPassage {
-            anchor: chunk_anchor(&hit.hit.id, heading),
-            id: hit.hit.id,
-            path: hit.hit.path,
-            title: hit.hit.title,
-            r#type: hit.hit.r#type,
-            heading_path: hit.hit.heading_path,
-            text,
-            score: hit.hit.score,
-        });
-        used_chars += text_len;
+            // Trim at a paragraph edge rather than mid-sentence when the budget bites.
+            let full = options.cost(&hit.text);
+            let text = if full <= remaining { hit.text.clone() } else { trim_to_cost(&hit.text, remaining, options) };
+            let cost = options.cost(&text);
+            if utf16_len(&text) < utf16_len(&hit.text) {
+                truncated = true;
+            }
+            if text.is_empty() {
+                truncated = true;
+                break;
+            }
+
+            let heading = hit.hit.heading_path.last().map_or("", String::as_str);
+            passages.push(RetrievedPassage {
+                anchor: chunk_anchor(&hit.hit.id, heading),
+                id: hit.hit.id,
+                path: hit.hit.path,
+                title: hit.hit.title,
+                r#type: hit.hit.r#type,
+                heading_path: hit.hit.heading_path,
+                text,
+                score: hit.hit.score,
+            });
+            used += cost;
+        }
     }
 
     Ok(RetrievalResult {
-        query: query.to_string(),
+        query: asked,
         passages,
         linked: None,
-        used_chars: used_chars as u64,
+        used_chars: used as u64,
+        budget_tokens: options.budget_tokens,
         truncated,
     })
 }
 
+/// Lift the passages of pages other pages link to, then put them back in order.
+fn boost_by_links(hits: &mut [ChunkHit], inbound: &HashMap<String, u32>) {
+    if inbound.is_empty() {
+        return;
+    }
+    for hit in hits.iter_mut() {
+        let links = inbound.get(&hit.hit.id).copied().unwrap_or(0).min(MAX_COUNTED_LINKS);
+        hit.hit.score *= 1.0 + LINK_BOOST * f64::from(links);
+    }
+    // Stable, descending: equal scores keep their order, as JS sort does.
+    hits.sort_by(|a, b| b.hit.score.partial_cmp(&a.hit.score).unwrap_or(std::cmp::Ordering::Equal));
+}
+
+/// Merge the rankings of several phrasings by reciprocal rank: a passage's
+/// score is the sum of 1 / (k + rank) over the phrasings that found it. Ranks
+/// rather than scores, because BM25 scores of different queries do not compare.
+fn fuse(ranked: Vec<Vec<ChunkHit>>) -> Vec<ChunkHit> {
+    let mut fused: Vec<ChunkHit> = Vec::new();
+    let mut position: HashMap<String, usize> = HashMap::new();
+    for hits in ranked {
+        for (rank, mut hit) in hits.into_iter().enumerate() {
+            let share = 1.0 / (RRF_K + rank as f64 + 1.0);
+            match position.get(&hit.chunk_id) {
+                Some(&at) => fused[at].hit.score += share,
+                None => {
+                    position.insert(hit.chunk_id.clone(), fused.len());
+                    hit.hit.score = share;
+                    fused.push(hit);
+                }
+            }
+        }
+    }
+    fused.sort_by(|a, b| b.hit.score.partial_cmp(&a.hit.score).unwrap_or(std::cmp::Ordering::Equal));
+    fused
+}
+
 /// Drop passages that share too little with the query, measured over the same
-/// normalised content tokens the index uses.
-fn filter_by_coverage(hits: Vec<ChunkHit>, query: &str, min_matches: i64) -> Vec<ChunkHit> {
+/// normalised content tokens the index uses, and over everything a passage is
+/// indexed with: its page's title, description and tags as well as its text.
+fn filter_by_coverage(index: &FtsIndex, hits: Vec<ChunkHit>, query: &str, min_matches: i64) -> FtsResult<Vec<ChunkHit>> {
     if min_matches <= 0 {
-        return hits;
+        return Ok(hits);
     }
 
     let mut wanted: Vec<String> = Vec::new();
@@ -183,34 +240,31 @@ fn filter_by_coverage(hits: Vec<ChunkHit>, query: &str, min_matches: i64) -> Vec
     }
     // A query of pure grammar has nothing to check against; let BM25 decide.
     if wanted.is_empty() {
-        return hits;
+        return Ok(hits);
     }
 
-    let needed = (min_matches as usize).min(wanted.len());
+    // Half of what the question carries, up to the minimum: a two-word
+    // question is not asked to match both, since one is often the asking
+    // word (何時, how) rather than the subject.
+    let needed = (min_matches as usize).min(wanted.len().div_ceil(2));
 
-    hits.into_iter()
-        .filter(|hit| {
-            let heading = hit.hit.heading_path.join(" ");
-            let joined = [hit.hit.title.as_str(), heading.as_str(), hit.text.as_str()]
-                .iter()
-                .filter(|s| !s.is_empty())
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" ");
-            let normalized = normalize_for_index(&joined);
-            let haystack: HashSet<&str> = normalized.split(' ').collect();
-            let mut found = 0;
-            for token in &wanted {
-                if haystack.contains(token.as_str()) {
-                    found += 1;
-                }
-                if found >= needed {
-                    return true;
-                }
-            }
-            false
-        })
-        .collect()
+    let mut kept = Vec::new();
+    for hit in hits {
+        let heading = hit.hit.heading_path.join(" ");
+        let context = index.context_of(&hit.hit.id)?;
+        let joined = [hit.hit.title.as_str(), heading.as_str(), context.as_str(), hit.text.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let normalized = normalize_for_index(&joined);
+        let haystack: HashSet<&str> = normalized.split(' ').collect();
+        if wanted.iter().filter(|token| haystack.contains(token.as_str())).count() >= needed {
+            kept.push(hit);
+        }
+    }
+    Ok(kept)
 }
 
 fn select_passages(hits: Vec<ChunkHit>, limit: usize) -> Vec<ChunkHit> {
@@ -279,6 +333,23 @@ fn last_index_of16(haystack: &[u16], needle: &[u16]) -> i64 {
         }
     }
     found
+}
+
+/// Cut `text` to what `remaining` of the budget buys. In characters that is
+/// [`trim_to_budget`]; in tokens, start from the proportional length and
+/// shorten until the estimate fits.
+fn trim_to_cost(text: &str, remaining: usize, options: &RetrieveOptions) -> String {
+    if options.budget_tokens.is_none() {
+        return trim_to_budget(text, remaining);
+    }
+    let mut chars = utf16_len(text) * remaining / options.cost(text).max(1);
+    loop {
+        let cut = trim_to_budget(text, chars);
+        if chars == 0 || options.cost(&cut) <= remaining {
+            return cut;
+        }
+        chars = chars * 9 / 10;
+    }
 }
 
 fn trim_to_budget(text: &str, budget: usize) -> String {
@@ -382,10 +453,10 @@ pub fn format_retrieval(result: &RetrievalResult) -> String {
         Some(linked) => format!("\n\n{}", format_linked(linked)),
         None => String::new(),
     };
-    let footer = if result.truncated {
-        "\n\n_(truncated to fit the context budget — narrow the query or raise budget_chars for more)_"
-    } else {
-        ""
+    let footer = match (result.truncated, result.budget_tokens) {
+        (false, _) => "",
+        (true, None) => "\n\n_(truncated to fit the context budget — narrow the query or raise budget_chars for more)_",
+        (true, Some(_)) => "\n\n_(truncated to fit the context budget — narrow the query or raise budget_tokens for more)_",
     };
 
     format!("{header}\n\n{}{linked}{footer}", parts.join("\n\n---\n\n"))
@@ -517,6 +588,72 @@ mod tests {
             },
         );
         assert!(expanded.passages.len() > plain.passages.len());
+    }
+
+    #[test]
+    fn a_page_is_found_by_its_description_and_tags() {
+        let dir = tempfile::tempdir().unwrap();
+        let i = open_corpus(dir.path());
+        let mut doc = crate::rag::fts::testutil::doc("deploy", "Playbook", "デプロイ手順", &["リリース"], "## 戻し方
+
+ひとつ前のタグを指定して実行する。");
+        doc.frontmatter.description = Some("本番への反映とロールバック".into());
+        i.upsert(&doc).unwrap();
+        // Neither word is in the body: one is the description's, one a tag.
+        assert_eq!(go(&i, "ロールバック", &Default::default()).passages[0].id, "deploy");
+        assert_eq!(go(&i, "リリース", &Default::default()).passages[0].id, "deploy");
+    }
+
+    #[test]
+    fn other_phrasings_are_fused_into_one_ranking() {
+        let dir = tempfile::tempdir().unwrap();
+        let i = open_corpus(dir.path());
+        let alone = go(&i, "まったく存在しない語句xyzzy", &Default::default());
+        assert!(alone.passages.is_empty());
+        let both = go(
+            &i,
+            "まったく存在しない語句xyzzy",
+            &RetrieveOptions { queries: vec!["チャンク分割".into(), "  ".into()], ..Default::default() },
+        );
+        assert_eq!(both.query, "まったく存在しない語句xyzzy | チャンク分割");
+        assert_eq!(both.passages[0].id, "rag");
+        // A passage both phrasings find outranks one only the first finds.
+        let fused = go(&i, "設計", &RetrieveOptions { queries: vec!["最高軽量 メモリ".into()], ..Default::default() });
+        assert_eq!(fused.passages[0].heading_path.last().map(String::as_str), Some("最高軽量"));
+    }
+
+    #[test]
+    fn links_lift_a_page_up_to_a_cap() {
+        let dir = tempfile::tempdir().unwrap();
+        let i = open_corpus(dir.path());
+        let plain = go(&i, "設計", &Default::default());
+        let last = plain.passages.last().unwrap().id.clone();
+        let inbound: HashMap<String, u32> = [(last.clone(), 100)].into_iter().collect();
+        let lifted = go(&i, "設計", &RetrieveOptions { inbound, ..Default::default() });
+        let (before, after) = (
+            plain.passages.iter().find(|p| p.id == last).unwrap().score,
+            lifted.passages.iter().find(|p| p.id == last).unwrap().score,
+        );
+        // Capped: a hundred links count as eight.
+        assert!((after / before - (1.0 + LINK_BOOST * f64::from(MAX_COUNTED_LINKS))).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_token_budget_counts_tokens_and_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let i = open_corpus(dir.path());
+        let generous = go(&i, "設計", &RetrieveOptions { budget_tokens: Some(100_000), ..Default::default() });
+        assert!(!generous.truncated);
+        let total: u64 = generous.passages.iter().map(|p| estimate_tokens(&p.text)).sum();
+        assert_eq!(generous.used_chars, total);
+
+        let cap = (total / 2) as i64;
+        let capped = go(&i, "設計", &RetrieveOptions { budget_tokens: Some(cap), budget_chars: Some(1), ..Default::default() });
+        assert_eq!(capped.budget_tokens, Some(cap));
+        assert!(capped.truncated && !capped.passages.is_empty());
+        assert!(capped.used_chars <= cap as u64);
+        assert!(capped.passages.iter().map(|p| estimate_tokens(&p.text)).sum::<u64>() <= cap as u64);
+        assert!(format_retrieval(&capped).contains("raise budget_tokens"));
     }
 
     #[test]

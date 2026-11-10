@@ -154,7 +154,6 @@ export function buildMatchQuery(query: string, mode: QueryMode = "phrase"): stri
   return clauses.join(" AND ");
 }
 
-const HIRAGANA_ONLY_RE = /^[぀-ゟー]+$/;
 
 /**
  * Whether a token carries meaning rather than grammar.
@@ -169,7 +168,9 @@ const HIRAGANA_ONLY_RE = /^[぀-ゟー]+$/;
  * low-information anyway, so the cost of being wrong is small.
  */
 export function isContentToken(token: string): boolean {
-  return !HIRAGANA_ONLY_RE.test(token);
+  // Any hiragana, not only all-hiragana: a bigram that straddles a word and
+  // its particle (引と, 割の) is glue too, and no page contains that seam.
+  return !/[\u3040-\u309f]/.test(token) && !/^ー+$/.test(token);
 }
 
 export interface Highlight {

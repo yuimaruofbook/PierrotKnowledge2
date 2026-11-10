@@ -105,7 +105,7 @@ import { SkillSpace } from "./okf/skills";
 import { LoopSpace } from "./okf/loops";
 import { scaffoldBundle, type ScaffoldResult } from "./okf/scaffold";
 import { FtsIndex, type SearchOptions } from "./rag/fts";
-import { DEFAULT_BUDGET_CHARS, retrieve, type RetrieveOptions } from "./rag/retrieve";
+import { DEFAULT_BUDGET_CHARS, budgetOf, costOf, retrieve, type RetrieveOptions } from "./rag/retrieve";
 import {
   TIER_DEFAULTS,
   groupPassages,
@@ -420,13 +420,15 @@ export class Workspace {
    * `linkDepth` is applied here rather than in the index: following a link
    * needs the concept graph, which only the bundle has.
    */
-  retrieve(query: string, options: RetrieveOptions = {}): RetrievalResult {
+  retrieve(query: string, asked: RetrieveOptions = {}): RetrievalResult {
+    // The index ranks; the bundle knows which pages the others point at.
+    const options: RetrieveOptions = { ...asked, inbound: this.requireBundle().inboundCounts() };
     const result = retrieve(this.requireFts(), query, options);
 
     const depth = options.linkDepth ?? 0;
     if (depth <= 0 || result.passages.length === 0) return result;
 
-    const budget = Math.max(1, options.budgetChars ?? DEFAULT_BUDGET_CHARS);
+    const budget = budgetOf(options);
     const reached = this.followLinks(
       [...new Set(result.passages.map((p) => p.id))],
       depth,
@@ -456,7 +458,7 @@ export class Workspace {
     startIds: readonly string[],
     depth: number,
     budgetLeft: number,
-    filters: SearchFilters
+    filters: RetrieveOptions
   ): { linked: LinkedFile[]; usedChars: number; truncated: boolean } {
     const bundle = this.requireBundle();
     // Resolved against the ids that exist now, not the `resolved` recorded
@@ -489,7 +491,7 @@ export class Workspace {
           const title = conceptTitle(target.id, target.frontmatter);
           const description = target.frontmatter.description;
           const text = typeof description === "string" && description.trim() ? description : undefined;
-          const cost = title.length + (text?.length ?? 0);
+          const cost = costOf(filters, title) + (text ? costOf(filters, text) : 0);
           if (used + cost > budgetLeft) return { linked, usedChars: used, truncated: true };
 
           used += cost;
@@ -526,12 +528,11 @@ export class Workspace {
       ? TIER_DEFAULTS[options.tier]
       : { budgetChars: DEFAULT_BUDGET_CHARS, limit: 8 };
     const budgetChars = options.budgetChars ?? defaults.budgetChars;
+    const sized: RetrieveOptions = { ...options, budgetChars, limit: options.limit ?? defaults.limit };
+    // In tokens when the caller budgeted in tokens.
+    const budget = budgetOf(sized);
 
-    const retrieval = this.retrieve(task, {
-      ...options,
-      budgetChars,
-      limit: options.limit ?? defaults.limit,
-    });
+    const retrieval = this.retrieve(task, sized);
 
     const bundle = this.requireBundle();
     const files = groupPassages(retrieval, (id) => {
@@ -551,8 +552,8 @@ export class Workspace {
     let truncated = retrieval.truncated;
     if (options.paraDepth === undefined || withinParaDepth(KNOWHOW_DIR, options.paraDepth)) {
       for (const r of this.knowhowFind(task, 3, options.includeDead === true, options).ranked) {
-        const cost = r.title.length + r.description.length;
-        if (usedChars + cost > budgetChars) {
+        const cost = costOf(sized, r.title) + costOf(sized, r.description);
+        if (usedChars + cost > budget) {
           truncated = true;
           break;
         }
@@ -571,6 +572,7 @@ export class Workspace {
       task,
       ...(options.tier ? { tier: options.tier } : {}),
       budgetChars,
+      ...(options.budgetTokens !== undefined ? { budgetTokens: options.budgetTokens } : {}),
       files,
       skills: found.ranked.map((r) => ({
         name: r.name,

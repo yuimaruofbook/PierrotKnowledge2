@@ -525,6 +525,9 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
                     expand_neighbours: args.get("expand_neighbours") == Some(&Value::Bool(true)),
                     min_content_matches: None,
                     link_depth,
+                    queries: str_array(args, "queries"),
+                    budget_tokens: number_arg(args, "budget_tokens"),
+                    inbound: Default::default(),
                 },
             )?;
             Ok(text(format_retrieval(&result)))
@@ -555,6 +558,7 @@ fn dispatch(ws: &mut Workspace, name: &str, args: &Args) -> Result<ToolResult> {
                     filters,
                     limit: number_arg(args, "limit"),
                     budget_chars: number_arg(args, "budget_chars"),
+                    budget_tokens: number_arg(args, "budget_tokens"),
                     link_depth,
                     ..Default::default()
                 },

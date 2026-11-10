@@ -200,13 +200,20 @@
  {
   "name": "retrieve",
   "title": "Retrieve context",
-  "description": "Retrieve relevant passages assembled for reasoning, with citation anchors and a character budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Works with Japanese, Chinese and English.",
+  "description": "Retrieve relevant passages assembled for reasoning, with citation anchors and a budget. This is the RAG entry point — prefer it over search when you need to ANSWER a question from the knowledge base. Returns whole sections with their heading path, not just snippets. Matching is lexical, so put other wordings of the question in queries instead of calling again. Works with Japanese, Chinese and English.",
   "inputSchema": {
    "type": "object",
    "properties": {
     "query": {
      "type": "string",
      "description": "Natural-language question or keywords"
+    },
+    "queries": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Other phrasings of the same question: synonyms, or the words the answer is likely written in. Each is searched and the rankings are fused, so one call does the work of several retries"
     },
     "limit": {
      "type": "number",
@@ -215,6 +222,10 @@
     "budget_chars": {
      "type": "number",
      "description": "Character budget across all passages (default 6000)"
+    },
+    "budget_tokens": {
+     "type": "number",
+     "description": "Budget in estimated tokens instead of characters (overrides budget_chars). Prefer it for Japanese or Chinese text, where a character costs about a token and four Latin letters cost one"
     },
     "expand_neighbours": {
      "type": "boolean",
@@ -271,6 +282,10 @@
     "budget_chars": {
      "type": "number",
      "description": "Character budget across all passages (overrides the tier default)"
+    },
+    "budget_tokens": {
+     "type": "number",
+     "description": "Budget in estimated tokens instead of characters (overrides budget_chars). Prefer it for Japanese or Chinese text, where a character costs about a token and four Latin letters cost one"
     },
     "limit": {
      "type": "number",

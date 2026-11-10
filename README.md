@@ -291,6 +291,19 @@ vanish tomorrow.
   orientation files.
 - **SkillSpace** — agents see only each skill's name and description and open a
   body once chosen. Measured 58% fewer tokens than loading every procedure.
+- **Retrieval without a model.** `retrieve` is BM25 over heading-sized chunks
+  in one SQLite file: no embeddings, no vector store, no key. A page is found
+  by its own `description` and tags as well as its text, pages the rest of the
+  wiki links to rank higher, and `queries` takes other wordings of the same
+  question so one call replaces several retries (the agent calling it is
+  already a model, so it writes the paraphrases). `budget_tokens` budgets in
+  estimated tokens, which is how a context window is actually spent: a
+  Japanese character costs about a token, four Latin letters cost one. On the
+  small evaluation set in the tests, recall@3 is 0.75 (0.94 with extra
+  phrasings) against 0.38 before. The honest limit is a question that shares
+  no vocabulary with its answer; for that, point retrieval at an embedding
+  server you already run (not built in yet). See
+  [Architecture](docs/ARCHITECTURE.md#retrieval-index).
 - **`list_tasks`** returns open work by default.
 - **Loops** — one repeatable task is one file; the last 5 runs keep their full
   journal, the next 20 collapse to a line, older ones to a count.

@@ -102,6 +102,10 @@ pub struct ContextPack {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<ContextTier>,
     pub budget_chars: i64,
+    /// The budget in estimated tokens, when the caller asked in tokens; it
+    /// then replaces `budget_chars`, and `used_chars` counts tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_tokens: Option<i64>,
     pub files: Vec<ContextPackFile>,
     /// Skills that match the task, so procedure travels with context.
     pub skills: Vec<ContextPackSkill>,
@@ -192,7 +196,10 @@ pub fn format_context_pack(pack: &ContextPack) -> String {
     if let Some(tier) = pack.tier {
         meta.push(format!("tier: {}", tier.as_str()));
     }
-    meta.push(format!("budget {} chars", pack.budget_chars));
+    meta.push(match pack.budget_tokens {
+        Some(tokens) => format!("budget {tokens} tokens"),
+        None => format!("budget {} chars", pack.budget_chars),
+    });
     meta.push(format!("used {}", pack.used_chars));
     meta.push(format!("{} file(s)", pack.files.len()));
     lines.push(meta.join(" · "));
@@ -261,10 +268,8 @@ pub fn format_context_pack(pack: &ContextPack) -> String {
     }
 
     if pack.truncated {
-        lines.push(
-            "_(truncated to fit the budget — raise budget_chars, or read_file the most relevant path)_"
-                .to_string(),
-        );
+        let knob = if pack.budget_tokens.is_some() { "budget_tokens" } else { "budget_chars" };
+        lines.push(format!("_(truncated to fit the budget — raise {knob}, or read_file the most relevant path)_"));
     }
 
     crate::shared::js_compat::js_trim_end(&lines.join("\n")).to_string()
@@ -314,6 +319,7 @@ mod pack_tests {
             task: task.into(),
             tier,
             budget_chars: d.budget_chars,
+            budget_tokens: None,
             files: group_passages(&r, |id| (id == "rag").then(|| "検索の説明".to_string())),
             skills: vec![ContextPackSkill {
                 name: "japanese-search".into(),
@@ -405,6 +411,7 @@ mod pack_tests {
             task: "x".into(),
             tier: None,
             budget_chars: 6000,
+            budget_tokens: None,
             files: vec![],
             skills: vec![],
             knowhow: vec![ContextPackKnowhow {
@@ -427,6 +434,7 @@ mod pack_tests {
             task: "量子".into(),
             tier: None,
             budget_chars: 6000,
+            budget_tokens: None,
             files: vec![],
             skills: vec![],
             knowhow: vec![],

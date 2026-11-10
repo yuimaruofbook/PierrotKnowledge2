@@ -9,6 +9,7 @@
 //! original, so an index file is interchangeable between the two and ranking
 //! matches.
 
+use crate::shared::js_compat::js_trim;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,7 @@ use crate::shared::okf::{
 use crate::shared::types::{ChunkHit, ConceptDocument, SearchFilters, SearchHit, TagCount};
 
 /// Bumped when the schema or the normalisation changes; forces a rebuild.
-pub const SCHEMA_VERSION: &str = "6";
+pub const SCHEMA_VERSION: &str = "7";
 
 /// Tags are stored as one delimited string so a document stays a single row.
 /// The delimiter wraps both ends, so a LIKE on the wrapped tag matches a whole
@@ -69,6 +70,19 @@ impl From<std::io::Error> for FtsError {
 }
 
 pub type FtsResult<T> = Result<T, FtsError>;
+
+/// The description and the tags as one line of text; either may be absent.
+fn document_context(description: Option<&str>, tags: &[String]) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(description) = description.map(js_trim).filter(|d| !d.is_empty()) {
+        parts.push(description);
+    }
+    // Lifecycle tags say what state a page is in, not what it is about.
+    parts.extend(tags.iter().map(String::as_str).filter(|tag| {
+        crate::shared::okf::lifecycle::lifecycle_of(&[*tag]) == crate::shared::okf::lifecycle::LifecycleChoice::None
+    }));
+    parts.join(" ")
+}
 
 fn pack_tags(tags: &[String]) -> String {
     if tags.is_empty() {
@@ -417,6 +431,16 @@ impl FtsIndex {
         bm25::register(&conn);
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
+        // A schema change starts from nothing: `.rag/` is derived, and an FTS5
+        // table cannot gain a column in place.
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);")?;
+        let version: Option<String> =
+            conn.query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| r.get(0)).ok();
+        if version.as_deref() != Some(SCHEMA_VERSION) {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS chunks_fts; DROP TABLE IF EXISTS chunks; DROP TABLE IF EXISTS docs;",
+            )?;
+        }
         conn.execute_batch(
             "
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -427,7 +451,8 @@ impl FtsIndex {
         title  TEXT NOT NULL,
         type   TEXT NOT NULL,
         tags   TEXT NOT NULL DEFAULT '',
-        mtime  REAL NOT NULL
+        mtime  REAL NOT NULL,
+        context TEXT NOT NULL DEFAULT ''
       );
 
       CREATE TABLE IF NOT EXISTS chunks (
@@ -446,6 +471,7 @@ impl FtsIndex {
         title_n,
         heading_n,
         text_n,
+        context_n,
         tokenize = 'unicode61 remove_diacritics 2'
       );
     ",
@@ -520,8 +546,13 @@ impl FtsIndex {
         let title = concept_title(&doc.id, &doc.frontmatter);
         let tags = doc.frontmatter.string_tags();
 
+        // What the page says it is about, in the author's own summary words.
+        // Indexed with every chunk: a section that never names its subject is
+        // still found by the page's description and tags.
+        let context = document_context(doc.frontmatter.description.as_deref(), &tags);
+
         conn.prepare_cached(
-            "INSERT INTO docs (id, path, title, type, tags, mtime) VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO docs (id, path, title, type, tags, mtime, context) VALUES (?, ?, ?, ?, ?, ?, ?)",
         )?
         .execute(params![
             doc.id,
@@ -529,10 +560,12 @@ impl FtsIndex {
             title,
             doc.frontmatter.r#type,
             pack_tags(&tags),
-            doc.mtime_ms
+            doc.mtime_ms,
+            context
         ])?;
 
         let title_normalized = normalize_for_index(&title);
+        let context_normalized = normalize_for_index(&context);
         let chunks = chunk_body(&doc.body);
 
         // A document with an empty body still needs a row, or its title becomes
@@ -544,9 +577,9 @@ impl FtsIndex {
             )?
             .execute(params![id, doc.id])?;
             conn.prepare_cached(
-                "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n) VALUES (?, ?, '', '')",
+                "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n, context_n) VALUES (?, ?, '', '', ?)",
             )?
-            .execute(params![id, title_normalized])?;
+            .execute(params![id, title_normalized, context_normalized])?;
             return Ok(());
         }
 
@@ -566,13 +599,14 @@ impl FtsIndex {
                 chunk.char_start as i64
             ])?;
             conn.prepare_cached(
-                "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n) VALUES (?, ?, ?, ?)",
+                "INSERT INTO chunks_fts (chunk_id, title_n, heading_n, text_n, context_n) VALUES (?, ?, ?, ?, ?)",
             )?
             .execute(params![
                 id,
                 title_normalized,
                 normalize_for_index(&heading_path),
-                normalize_for_index(&chunk.text)
+                normalize_for_index(&chunk.text),
+                context_normalized
             ])?;
         }
         Ok(())
@@ -646,6 +680,16 @@ impl FtsIndex {
     ///
     /// Column weights put a title match well above a heading match, and a
     /// heading above body prose, matching how a person scans a wiki.
+    /// The description and tags a document was indexed with.
+    pub fn context_of(&self, doc_id: &str) -> FtsResult<String> {
+        let found: Option<String> = self
+            .handle()?
+            .prepare_cached("SELECT context FROM docs WHERE id = ?")?
+            .query_row([doc_id], |r| r.get(0))
+            .ok();
+        Ok(found.unwrap_or_default())
+    }
+
     pub fn search_chunks(&self, query: &str, options: &SearchOptions) -> FtsResult<Vec<ChunkHit>> {
         let conn = self.handle()?;
         let Some(match_expr) = build_match_query(query, options.mode.unwrap_or(QueryMode::Phrase))
@@ -699,7 +743,7 @@ impl FtsIndex {
         let sql = format!(
             "SELECT c.chunk_id, c.doc_id, c.ord, c.heading_path, c.text,
                   d.path, d.title, d.type, d.tags,
-                  bm25(chunks_fts, 0, 12.0, 4.0, 1.0) AS score
+                  bm25(chunks_fts, 0, 12.0, 4.0, 1.0, 2.0) AS score
              FROM chunks_fts
              JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
              JOIN docs   d ON d.id = c.doc_id
@@ -1076,6 +1120,32 @@ mod tests {
 
         i.upsert(&doc("stub", "Note", "スタブ頁", &[], "")).unwrap();
         assert!(ids(&i, "スタブ", &plain()).contains(&"stub".into()));
+    }
+
+    #[test]
+    fn an_index_from_an_older_schema_is_rebuilt_not_patched() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("index.db");
+        {
+            // What schema 6 left behind: no `context` anywhere.
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+                 INSERT INTO meta VALUES ('schema_version', '6');
+                 CREATE TABLE docs (id TEXT PRIMARY KEY, path TEXT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '', mtime REAL NOT NULL);
+                 INSERT INTO docs VALUES ('stale', 'wiki/stale.md', 'Stale', 'Note', '', 1);
+                 CREATE TABLE chunks (chunk_id TEXT PRIMARY KEY, doc_id TEXT NOT NULL, ord INTEGER NOT NULL, heading_path TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, char_start INTEGER NOT NULL DEFAULT 0);
+                 CREATE VIRTUAL TABLE chunks_fts USING fts5(chunk_id UNINDEXED, title_n, heading_n, text_n, tokenize = 'unicode61 remove_diacritics 2');",
+            )
+            .unwrap();
+        }
+        let mut index = FtsIndex::new(&path);
+        index.open().unwrap();
+        assert_eq!(index.document_count().unwrap(), 0);
+        index.rebuild(&corpus()).unwrap();
+        assert_eq!(index.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+        assert_eq!(index.context_of("rag").unwrap(), "rag search");
+        assert_eq!(ids(&index, "チャンク", &plain()), ["rag"]);
     }
 
     #[test]
