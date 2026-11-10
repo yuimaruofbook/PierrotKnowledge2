@@ -86,7 +86,9 @@ fn dangling_note(dangling: &[DanglingRelation]) -> String {
     if dangling.is_empty() {
         return String::new();
     }
-    let list: Vec<String> = dangling.iter().map(|d| format!("{} ({}: {})", d.path, d.kind, d.target)).collect();
+    // Sorted: they arrive in directory order, which differs between filesystems.
+    let mut list: Vec<String> = dangling.iter().map(|d| format!("{} ({}: {})", d.path, d.kind, d.target)).collect();
+    list.sort();
     format!(" — these relations now dangle and need a manual edit: {}", list.join("; "))
 }
 

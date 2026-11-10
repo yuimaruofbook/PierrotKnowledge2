@@ -919,7 +919,8 @@ const canvasRangeFrom = (args: Record<string, unknown>) =>
 /** The relations a move could not follow, for the end of its answer. */
 function danglingNote(dangling: ReadonlyArray<{ path: string; kind: string; target: string }>): string {
   if (dangling.length === 0) return "";
-  const list = dangling.map((d) => `${d.path} (${d.kind}: ${d.target})`).join("; ");
+  // Sorted: they arrive in directory order, which differs between filesystems.
+  const list = dangling.map((d) => `${d.path} (${d.kind}: ${d.target})`).sort().join("; ");
   return ` — these relations now dangle and need a manual edit: ${list}`;
 }
 
